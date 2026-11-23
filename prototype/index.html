@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; object-src 'none'; base-uri 'none'">
+  <title>Mind Mapper Prototype</title>
+  <link rel="stylesheet" href="workspace.css">
+  <script defer src="../src/model.js"></script>
+  <script defer src="board.js"></script>
+  <script defer src="geometry.js"></script>
+  <script defer src="workspace.js"></script>
+</head>
+<body>
+  <header class="titlebar">
+    <button type="button" data-command="boards" aria-pressed="true" aria-controls="library">Boards</button>
+    <div class="document">
+      <input id="board-title" aria-label="Board title" maxlength="120" disabled>
+      <span id="status" role="status" aria-live="polite">Opening…</span>
+    </div>
+    <button type="button" data-command="undo" aria-label="Undo" disabled>↶</button>
+    <button type="button" data-command="redo" aria-label="Redo" disabled>↷</button>
+    <button type="button" data-command="inspector" aria-pressed="false" aria-controls="inspector">Inspector</button>
+    <button type="button" class="accent" popovertarget="export-menu">Export</button>
+    <div id="export-menu" popover>
+      <button type="button" data-command="exportSVG">SVG figure</button>
+      <button type="button" data-command="exportBoard">Editable board</button>
+    </div>
+  </header>
+  <div class="workspace">
+    <aside id="library" aria-label="Board library">
+      <div class="panel-title"><h2>Boards</h2><button type="button" data-command="new" aria-label="New board">+</button></div>
+      <nav id="board-list" aria-label="Saved boards"></nav>
+      <div class="library-actions">
+        <button type="button" data-command="open">Import</button>
+        <button type="button" data-command="example">Example board</button>
+      </div>
+    </aside>
+    <main aria-label="Mind Mapper board">
+      <div id="viewport" tabindex="0" aria-label="Canvas" data-tool="select">
+        <div id="world">
+          <svg id="diagram" aria-hidden="true"></svg>
+          <div id="objects" aria-label="Board objects"></div>
+          <textarea id="object-editor" aria-label="Object text" spellcheck="true" hidden></textarea>
+        </div>
+      </div>
+      <div id="empty" hidden>
+        <h1>Blank board</h1><p>Start anywhere on the canvas.</p>
+        <div><button type="button" class="accent" data-start="text">Add text</button>
+          <button type="button" data-start="branch">Start a mind map</button></div>
+      </div>
+      <div class="tools floating" role="group" aria-label="Canvas tools">
+        <button type="button" data-tool="select" aria-pressed="true" title="Select or move">Select</button>
+        <button type="button" data-tool="text" aria-pressed="false" title="Place text">Text</button>
+        <button type="button" data-tool="shape" aria-pressed="false" title="Place a block">Shape</button>
+        <button type="button" data-tool="branch" aria-pressed="false" title="Place a branch root">Branch</button>
+        <button type="button" data-tool="link" aria-pressed="false" title="Select two objects to connect">Connect</button>
+        <button type="button" data-tool="draw" aria-pressed="false" title="Draw a stroke">Draw</button>
+      </div>
+      <div class="view floating" role="group" aria-label="Canvas view">
+        <button type="button" data-command="zoomOut" aria-label="Zoom out">−</button>
+        <output id="zoom">100%</output>
+        <button type="button" data-command="zoomIn" aria-label="Zoom in">+</button>
+        <button type="button" data-command="fit">Fit</button>
+      </div>
+      <div id="notice" class="floating" hidden role="alert">
+        <span id="notice-text"></span><button type="button" data-command="save" id="retry" hidden>Try again</button>
+        <button type="button" data-command="dismiss" aria-label="Dismiss message">×</button>
+      </div>
+    </main>
+    <aside id="inspector" aria-label="Selection inspector" hidden>
+      <div class="panel-title"><h2>Inspector</h2></div>
+      <div id="properties"></div>
+    </aside>
+  </div>
+  <input type="file" id="import-file" accept=".json,.mindmap,application/json" hidden>
+</body>
+</html>

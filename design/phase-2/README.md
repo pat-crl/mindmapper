@@ -32,7 +32,9 @@ Reference evidence came from the installed Journal bundle, the recovered SwiftUI
 - Show properties for the selected object in the Inspector. Use shared properties for a multi-selection. For a selected connector, show route, arrowheads, label and style. Keep direct object text editing on the canvas.
 - Open export with the scope and format in one place. Start with Board, Selection or Frame, then show SVG, PDF, PNG and JPEG as available for that build. Preview any change to bounds, padding or background.
 
-The proposed icon is **Branch**. Its hierarchy survives at 16 px, where Loop and Route lose some separation. Pick the mark before producing macOS icon assets.
+The selected icon is **Loop**. Its closed path and two offset blocks distinguish Mind Mapper from an existing branch-shaped icon. The macOS asset reproduces the study with room around the tile for the Dock.
+
+To regenerate it from the project root, run `swift prototype/mac/Tools/MakeLoopIcon.swift prototype/mac/Resources/AppIcon.icns`.
 
 ## Mac input
 
@@ -67,6 +69,6 @@ Real build acceptance will include keyboard access to connections through a dest
 
 ## Review before Phase 3
 
-Compare the blank and populated boards in light and dark appearance. Toggle Boards and Inspector at compact width and check that the canvas remains the main focus. Use the Phase 1 brainstorm, decision flow and signal flow to judge whether this one workspace supports all three. Check the icon at 16 and 32 px before selecting it.
+Compare the blank and populated boards in light and dark appearance. Toggle Boards and Inspector at compact width and check that the canvas remains the main focus. Use the Phase 1 brainstorm, decision flow and signal flow to judge whether this one workspace supports all three. Compare Loop at 16 and 32 px with the larger study.
 
 The next phase can start from the window structure, colour roles and interaction map here. It still needs to prove the blank document, reliable keyboard focus, mixed board geometry and the shared editor with existing files.
