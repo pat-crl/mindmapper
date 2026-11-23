@@ -1,0 +1,652 @@
+<style>
+  #mm-workspace {
+    color-scheme: light dark;
+    --mm-paper: light-dark(#fff, #1e1e1e);
+    --mm-panel: light-dark(#f5f5f7, #29292d);
+    --mm-chrome: light-dark(#fafafc, #252528);
+    --mm-ink: light-dark(#242426, #e8e8ed);
+    --mm-muted: light-dark(#626268, #a8a8af);
+    --mm-line: light-dark(#dedee4, #48484e);
+    --mm-wire: light-dark(#777780, #9d9da8);
+    --mm-grid: light-dark(#dcdce4, #404046);
+    --mm-blue: light-dark(#005fc4, #82b9ff);
+    --mm-selection: light-dark(#e6f1ff, #28476b);
+    --mm-error: light-dark(#a82838, #ff9baa);
+    --mm-shadow: light-dark(#20203312, #0005);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: var(--mm-ink);
+    max-width: 1440px;
+    margin-inline: auto;
+  }
+  #mm-workspace[data-theme="light"] { color-scheme: light; }
+  #mm-workspace[data-theme="dark"] { color-scheme: dark; }
+  #mm-workspace * { box-sizing: border-box; }
+  #mm-workspace [hidden] { display: none !important; }
+  #mm-workspace button, #mm-workspace select { font: inherit; color: inherit; }
+  #mm-workspace button {
+    min-height: 32px; border: 1px solid transparent; border-radius: 7px;
+    background: transparent; padding: 4px 8px;
+  }
+  #mm-workspace button:hover { background: var(--mm-panel); }
+  #mm-workspace button:focus-visible, #mm-workspace select:focus-visible {
+    outline: 2px solid var(--mm-blue); outline-offset: 3px;
+  }
+  #mm-workspace button[aria-pressed="true"], #mm-workspace button[aria-current="true"] {
+    color: var(--mm-blue); background: var(--mm-selection);
+  }
+  #mm-workspace button:disabled { opacity: .52; }
+  #mm-workspace .mm-review, #mm-workspace .mm-toolbar, #mm-workspace .mm-tools,
+  #mm-workspace .mm-view, #mm-workspace .mm-segment, #mm-workspace .mm-actions {
+    display: flex; align-items: center; gap: 5px;
+  }
+  #mm-workspace .mm-review {
+    color-scheme: light dark; color: var(--mm-ink);
+    gap: 10px 16px; flex-wrap: wrap; margin-block-end: 12px;
+  }
+  #mm-workspace .mm-review fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+  #mm-workspace .mm-review label, #mm-workspace .mm-form-label { font-size: 12px; color: var(--mm-muted); }
+  #mm-workspace .mm-review select, #mm-workspace .mm-form-label select {
+    min-height: 32px; background: var(--mm-chrome); border: 1px solid var(--mm-line);
+    border-radius: 7px; padding: 2px 7px;
+  }
+  #mm-workspace .mm-segment {
+    border: 1px solid var(--mm-line); border-radius: 9px; background: var(--mm-panel);
+    gap: 2px; padding: 2px;
+  }
+  #mm-workspace .mm-segment button { font-size: 12px; }
+  #mm-workspace .mm-window {
+    background: var(--mm-paper); border: 1px solid var(--mm-line); border-radius: 13px;
+    overflow: hidden; box-shadow: 0 5px 18px var(--mm-shadow); margin-inline: auto;
+    container-type: inline-size;
+  }
+  #mm-workspace[data-width="compact"] .mm-window { max-width: 712px; }
+  #mm-workspace .mm-toolbar {
+    min-height: 54px; padding: 8px 12px; background: var(--mm-chrome);
+    border-bottom: 1px solid var(--mm-line); position: relative; z-index: 4; gap: 8px;
+  }
+  #mm-workspace .mm-traffic { display: flex; gap: 6px; margin-inline-end: 6px; }
+  #mm-workspace .mm-traffic span { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; }
+  #mm-workspace .mm-traffic span:nth-child(2) { background: #febc2e; }
+  #mm-workspace .mm-traffic span:nth-child(3) { background: #28c840; }
+  #mm-workspace .mm-title { min-width: 0; flex: 1; }
+  #mm-workspace .mm-title strong {
+    display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #mm-workspace .mm-title span { display: block; color: var(--mm-muted); font-size: 11px; }
+  #mm-workspace[data-status="failed"] .mm-title span { color: var(--mm-error); }
+  #mm-workspace .mm-glyph { font-size: 16px; line-height: 1; font-weight: 600; display: inline-block; }
+  #mm-workspace .mm-actions { margin-inline-start: auto; }
+  #mm-workspace .mm-share {
+    color: var(--mm-blue); background: var(--mm-selection); font-weight: 600;
+  }
+  #mm-workspace .mm-body { display: flex; position: relative; isolation: isolate; }
+  #mm-workspace .mm-sidebar, #mm-workspace .mm-inspector {
+    flex: none; padding: 14px 11px; background: var(--mm-panel); z-index: 3;
+  }
+  #mm-workspace .mm-sidebar { width: 178px; border-inline-end: 1px solid var(--mm-line); }
+  #mm-workspace .mm-inspector { width: 214px; border-inline-start: 1px solid var(--mm-line); }
+  #mm-workspace .mm-section-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  #mm-workspace .mm-section-head h2 { font-size: 13px; font-weight: 600; margin: 0; }
+  #mm-workspace .mm-sidebar nav { display: grid; gap: 2px; margin-block-start: 9px; }
+  #mm-workspace .mm-sidebar nav button { text-align: start; width: 100%; }
+  #mm-workspace .mm-sidebar nav button:hover { background: var(--mm-chrome); }
+  #mm-workspace .mm-inspector p { margin: 7px 0 13px; color: var(--mm-muted); font-size: 12px; overflow-wrap: anywhere; }
+  #mm-workspace .mm-form-label { display: grid; gap: 5px; margin-block: 11px; }
+  #mm-workspace .mm-form-label select { width: 100%; }
+  #mm-workspace .mm-canvas {
+    flex: 1; min-width: 0; position: relative; background-color: var(--mm-paper);
+    background-image: radial-gradient(var(--mm-grid) .78px, transparent .9px);
+    background-size: 18px 18px; background-position: 9px 9px;
+  }
+  #mm-workspace[data-grid="off"] .mm-canvas { background-image: none; }
+  #mm-workspace .mm-float {
+    background: var(--mm-paper); border: 1px solid var(--mm-line); border-radius: 10px;
+    box-shadow: 0 3px 12px var(--mm-shadow);
+  }
+  #mm-workspace .mm-tools {
+    width: max-content; max-width: calc(100% - 22px);
+    flex-wrap: wrap; justify-content: center; gap: 1px;
+    margin: 14px auto 0; padding: 3px;
+  }
+  #mm-workspace .mm-tools button { display: inline-flex; align-items: center; gap: 5px; min-width: 33px; font-size: 12px; }
+  #mm-workspace .mm-tools button .mm-glyph { width: 16px; text-align: center; }
+  #mm-workspace .mm-stage { position: relative; height: 409px; overflow: clip; }
+  #mm-workspace .mm-world { position: absolute; inset: 0; transform-origin: center; }
+  #mm-workspace .mm-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  #mm-workspace .mm-edge { stroke: var(--mm-wire); stroke-width: 1.45; fill: none; }
+  #mm-workspace .mm-edge.mm-feedback { stroke-dasharray: 4 4; }
+  #mm-workspace .mm-edge-text {
+    fill: var(--mm-muted); font-size: 11px; paint-order: stroke;
+    stroke: var(--mm-paper); stroke-width: 7px; stroke-linejoin: round;
+  }
+  #mm-workspace .mm-frame { fill: none; stroke: var(--mm-line); stroke-width: 1; stroke-dasharray: 4 4; }
+  #mm-workspace .mm-node {
+    position: absolute; transform: translate(-50%, -50%); display: grid; align-content: center;
+    text-align: start; padding: 6px 10px; min-height: 43px; line-height: 1.18; font-size: 13px;
+    background: var(--mm-paper); border: 1px solid var(--mm-line); border-radius: var(--mm-node-radius, 7px);
+    box-shadow: 0 1px 3px var(--mm-shadow);
+  }
+  #mm-workspace .mm-node strong { font-weight: 600; overflow-wrap: anywhere; }
+  #mm-workspace .mm-node small { color: var(--mm-muted); font-size: 11px; margin-top: 3px; }
+  #mm-workspace .mm-node:hover { background: var(--mm-chrome); border-color: var(--mm-wire); }
+  #mm-workspace .mm-node[aria-pressed="true"] { border-color: var(--mm-blue); box-shadow: 0 0 0 1px var(--mm-blue); }
+  #mm-workspace .mm-node[aria-pressed="true"]::after {
+    content: ""; position: absolute; right: -4px; top: calc(50% - 3px);
+    width: 7px; height: 7px; border-radius: 50%; background: var(--mm-paper); border: 1px solid var(--mm-blue);
+  }
+  #mm-workspace .mm-node[data-kind="decision"] { border-radius: 17px 6px; }
+  #mm-workspace .mm-node[data-kind="branch"] { border-radius: 11px; }
+  #mm-workspace .mm-node[data-kind="note"] { background: var(--mm-panel); }
+  #mm-workspace .mm-node[aria-pressed="true"][data-kind="note"] { background: var(--mm-selection); }
+  #mm-workspace .mm-node[data-colour="Blue"] { background: light-dark(#edf5ff, #243953); }
+  #mm-workspace .mm-node[data-colour="Green"] { background: light-dark(#edf6ef, #263a2c); }
+  #mm-workspace .mm-node[data-colour="Amber"] { background: light-dark(#f9f1e0, #413522); }
+  #mm-workspace .mm-node[data-locked="true"] { border-style: dashed; }
+  #mm-workspace .mm-node[data-locked="true"]::after { display: none; }
+  #mm-workspace .mm-blank {
+    position: absolute; inset: 0; display: grid; align-content: center; justify-items: center;
+    gap: 8px; padding: 16px; text-align: center; pointer-events: none;
+  }
+  #mm-workspace .mm-blank h2 { margin: 0; font-size: 18px; font-weight: 600; }
+  #mm-workspace .mm-blank .mm-mark {
+    color: var(--mm-muted); font-size: 25px; font-weight: 400; margin-bottom: 3px;
+  }
+  #mm-workspace .mm-blank p { color: var(--mm-muted); margin: 0 0 8px; font-size: 13px; }
+  #mm-workspace .mm-blank .mm-actions { margin: 0; flex-wrap: wrap; justify-content: center; }
+  #mm-workspace .mm-blank button { pointer-events: auto; background: var(--mm-paper); border-color: var(--mm-line); }
+  #mm-workspace .mm-blank button:first-child { background: var(--mm-selection); color: var(--mm-blue); }
+  #mm-workspace .mm-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px 10px; }
+  #mm-workspace .mm-view { gap: 0; padding: 2px; }
+  #mm-workspace .mm-view button { min-width: 31px; padding-inline: 6px; }
+  #mm-workspace .mm-view output { min-width: 43px; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+  #mm-workspace .mm-grid { background: var(--mm-paper); font-size: 12px; border-color: var(--mm-line); }
+  #mm-workspace .mm-alert {
+    max-width: 390px; margin: 12px auto 0; width: calc(100% - 24px);
+    padding: 9px 10px; font-size: 12px; display: flex; align-items: center; gap: 8px;
+  }
+  #mm-workspace .mm-alert span { flex: 1; }
+  #mm-workspace .mm-alert button { flex: none; color: var(--mm-blue); }
+  #mm-workspace .mm-export {
+    position: absolute; z-index: 6; inset-inline-end: 10px; top: 48px; width: 174px; padding: 8px;
+  }
+  #mm-workspace .mm-export strong { display: block; font-size: 12px; margin: 0 5px 3px; }
+  #mm-workspace .mm-export button { display: block; text-align: start; width: 100%; }
+  #mm-workspace .mm-sr {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  @container (max-width: 1060px) {
+    #mm-workspace .mm-inspector {
+      position: absolute; inset-block: 59px 0; inset-inline-end: 0;
+      box-shadow: -5px 0 20px var(--mm-shadow);
+    }
+  }
+  @container (max-width: 760px) {
+    #mm-workspace .mm-sidebar {
+      position: absolute; inset-block: 59px 0; inset-inline-start: 0; box-shadow: 5px 0 20px var(--mm-shadow);
+    }
+  }
+  @container (max-width: 525px) {
+    #mm-workspace .mm-traffic, #mm-workspace .mm-action-label, #mm-workspace .mm-tool-label { display: none; }
+    #mm-workspace .mm-toolbar { gap: 4px; padding-inline: 6px; }
+    #mm-workspace .mm-stage { height: 430px; }
+    #mm-workspace .mm-tools button { justify-content: center; }
+  }
+</style>
+
+<section id="mm-workspace" aria-label="Mind Mapper workspace design preview" data-grid="on" data-status="saved">
+  <div class="mm-review">
+    <fieldset aria-label="Preview board" class="mm-segment">
+      <button type="button" data-board="example" aria-pressed="true">Example board</button>
+      <button type="button" data-board="blank" aria-pressed="false">Blank board</button>
+    </fieldset>
+    <label>Appearance
+      <select data-control="theme">
+        <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
+      </select>
+    </label>
+    <label>Window
+      <select data-control="width">
+        <option value="wide">Wide</option><option value="compact">Compact</option>
+      </select>
+    </label>
+    <label>Save preview
+      <select data-control="status">
+        <option value="saved">Saved</option><option value="saving">Saving</option>
+        <option value="failed">Save failed</option><option value="recovery">Recovery available</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="mm-window">
+    <header class="mm-toolbar">
+      <div class="mm-traffic" aria-hidden="true"><span></span><span></span><span></span></div>
+      <button type="button" data-action="boards" aria-controls="mm-boards" aria-expanded="true" aria-label="Boards">
+        <span class="mm-glyph" aria-hidden="true">◫</span> <span class="mm-action-label">Boards</span>
+      </button>
+      <div class="mm-title">
+        <strong data-title>Studio routing</strong><span data-save>Saved</span>
+      </div>
+      <div class="mm-actions">
+        <button type="button" data-action="focus" aria-label="Focus mode" aria-pressed="false">
+          <span class="mm-glyph" aria-hidden="true">⌗</span> <span class="mm-action-label">Focus</span>
+        </button>
+        <button type="button" data-action="inspector" aria-controls="mm-inspector" aria-expanded="false" aria-label="Inspector">
+          <span class="mm-glyph" aria-hidden="true">ⓘ</span> <span class="mm-action-label">Inspector</span>
+        </button>
+        <button class="mm-share" type="button" data-action="export" aria-controls="mm-export" aria-expanded="false">
+          Export
+        </button>
+      </div>
+      <div id="mm-export" class="mm-export mm-float" hidden>
+        <strong>Export board</strong>
+        <button type="button" data-format="SVG">SVG figure</button>
+        <button type="button" data-format="PDF">Vector PDF</button>
+        <button type="button" data-format="PNG">PNG image</button>
+        <button type="button" data-format="JPEG">JPEG image</button>
+      </div>
+    </header>
+
+    <div class="mm-body">
+      <aside id="mm-boards" class="mm-sidebar" aria-label="Board library">
+        <div class="mm-section-head"><h2>Boards</h2><button type="button" data-board="blank" aria-label="New board">+</button></div>
+        <nav aria-label="Boards">
+          <button type="button" data-board="example" aria-current="true">Studio routing</button>
+          <button type="button" data-board="blank" aria-current="false">Untitled board</button>
+        </nav>
+      </aside>
+
+      <main class="mm-canvas" aria-label="Board canvas">
+        <div class="mm-alert mm-float" data-alert hidden>
+          <span data-alert-text></span><button type="button" data-action="recover" data-alert-action></button>
+        </div>
+        <div class="mm-tools mm-float" aria-label="Canvas tools">
+          <button type="button" data-tool="select" aria-label="Select" aria-pressed="true"><span class="mm-glyph" aria-hidden="true">↖</span><span class="mm-tool-label">Select</span></button>
+          <button type="button" data-tool="text" aria-label="Text" aria-pressed="false"><span class="mm-glyph" aria-hidden="true">T</span><span class="mm-tool-label">Text</span></button>
+          <button type="button" data-tool="shape" aria-label="Shape" aria-pressed="false"><span class="mm-glyph" aria-hidden="true">□</span><span class="mm-tool-label">Shape</span></button>
+          <button type="button" data-tool="branch" aria-label="Branch" aria-pressed="false"><span class="mm-glyph" aria-hidden="true">⑂</span><span class="mm-tool-label">Branch</span></button>
+          <button type="button" data-tool="link" aria-label="Connect" aria-pressed="false"><span class="mm-glyph" aria-hidden="true">↗</span><span class="mm-tool-label">Connect</span></button>
+          <button type="button" data-tool="draw" aria-label="Draw" aria-pressed="false"><span class="mm-glyph" aria-hidden="true">⌁</span><span class="mm-tool-label">Draw</span></button>
+        </div>
+
+        <div class="mm-stage">
+          <div class="mm-world">
+            <svg class="mm-edges" aria-hidden="true">
+              <defs>
+                <marker id="mm-preview-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M0 0L8 4L0 8Z" style="fill:var(--mm-wire)"></path>
+                </marker>
+              </defs>
+              <g data-edges></g>
+            </svg>
+            <div data-nodes></div>
+          </div>
+          <div class="mm-blank" hidden>
+            <div class="mm-mark" aria-hidden="true">⌁</div>
+            <h2>Blank board</h2>
+            <p>Start anywhere on the canvas.</p>
+            <div class="mm-actions">
+              <button type="button" data-add="text">Add text</button>
+              <button type="button" data-add="branch">Start a mind map</button>
+            </div>
+          </div>
+        </div>
+
+        <footer class="mm-footer">
+          <button type="button" class="mm-grid" data-action="grid" aria-pressed="true">Grid</button>
+          <div class="mm-view mm-float" aria-label="Zoom controls">
+            <button type="button" data-action="out" aria-label="Zoom out">−</button>
+            <output data-zoom>100%</output>
+            <button type="button" data-action="in" aria-label="Zoom in">+</button>
+            <button type="button" data-action="fit">Fit</button>
+          </div>
+        </footer>
+      </main>
+
+      <aside id="mm-inspector" class="mm-inspector" aria-label="Object inspector" hidden>
+        <div class="mm-section-head"><h2>Inspector</h2><button type="button" data-action="close-inspector" aria-label="Close inspector">×</button></div>
+        <div data-properties></div>
+      </aside>
+    </div>
+  </div>
+  <span class="mm-sr" role="status" data-announcement></span>
+</section>
+
+<script>
+(() => {
+  const root = document.getElementById('mm-workspace');
+  const find = selector => root.querySelector(selector);
+  const windowFrame = find('.mm-window');
+  const stage = find('.mm-stage');
+  const nodeLayer = find('[data-nodes]');
+  const edgeLayer = find('[data-edges]');
+  const windowControls = {
+    boards: find('[data-action="boards"]'),
+    inspector: find('[data-action="inspector"]'),
+    export: find('[data-action="export"]'),
+  };
+  const state = {
+    board: 'example', selected: 'trim', tool: 'select', boards: null, inspector: false,
+    focus: false, zoom: 1, blankKind: '', properties: {},
+  };
+  const examples = [
+    { id: 'mic', title: 'Microphone', note: 'Input', kind: 'shape', wide: [.13, 97], compact: [.25, 67] },
+    { id: 'trim', title: 'Trim gain', note: 'Preamp', kind: 'shape', wide: [.375, 97], compact: [.74, 67] },
+    { id: 'check', title: 'Peak check', note: 'Below −6 dB?', kind: 'decision', wide: [.625, 97], compact: [.74, 151] },
+    { id: 'monitor', title: 'Monitor', note: 'Output', kind: 'shape', wide: [.868, 97], compact: [.25, 151] },
+    { id: 'takes', title: 'Record takes', note: '', kind: 'branch', wide: [.20, 300], compact: [.25, 256] },
+    { id: 'dry', title: 'Dry take', note: '', kind: 'branch', wide: [.465, 260], compact: [.74, 235] },
+    { id: 'room', title: 'Room mic', note: '', kind: 'branch', wide: [.465, 342], compact: [.74, 301] },
+    { id: 'listen', title: 'Listening notes', note: 'Check room tone', kind: 'note', wide: [.795, 303], compact: [.25, 365] },
+  ];
+  const textForTool = { text: 'Text', shape: 'Shape', branch: 'Main idea', draw: 'Sketch' };
+  const saveLabels = { saved: 'Saved', saving: 'Saving…', failed: 'Couldn’t save', recovery: 'Recovery available' };
+  const svgNamespace = 'http://www.w3.org/2000/svg';
+
+  function setPressed(button, value) {
+    button.setAttribute('aria-pressed', String(value));
+  }
+
+  function svgElement(name, attributes) {
+    const element = document.createElementNS(svgNamespace, name);
+    Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+    return element;
+  }
+
+  function stroke(path, options = {}) {
+    const attributes = { d: path, class: options.dashed ? 'mm-edge mm-feedback' : 'mm-edge' };
+    if (options.arrow) attributes['marker-end'] = 'url(#mm-preview-arrow)';
+    return svgElement('path', attributes);
+  }
+
+  function edgeLabel(text, x, y) {
+    const element = svgElement('text', { x, y, 'text-anchor': 'middle', class: 'mm-edge-text' });
+    element.textContent = text;
+    return element;
+  }
+
+  function getObjects() {
+    if (state.board === 'example') return examples;
+    if (!state.blankKind) return [];
+    return [{ id: 'new', title: textForTool[state.blankKind], note: '', kind: state.blankKind, wide: [.5, 197], compact: [.5, 197] }];
+  }
+
+  function layoutObjects(objects) {
+    const width = stage.clientWidth;
+    const compact = width < 550;
+    const objectWidth = compact
+      ? Math.min(139, Math.max(102, Math.round(width * .36)))
+      : Math.min(146, Math.round(width * .19));
+    return Object.fromEntries(objects.map(object => {
+      const [horizontal, y] = compact ? object.compact : object.wide;
+      return [object.id, { x: Math.round(horizontal * width), y, w: objectWidth }];
+    }));
+  }
+
+  function flowElements(positions) {
+    const { mic, trim, check, monitor, takes, dry, room, listen } = positions;
+    const compact = stage.clientWidth < 550;
+    const left = node => node.x - node.w / 2;
+    const right = node => node.x + node.w / 2;
+    const arrow = { arrow: true };
+    const pathBetween = (a, b) => stroke('M'+right(a)+' '+a.y+' H'+(left(b)-3), arrow);
+    const overlays = [];
+    if (compact) {
+      overlays.push(pathBetween(mic, trim));
+      overlays.push(stroke('M'+trim.x+' '+(trim.y+24)+' V'+(check.y-25), arrow));
+      overlays.push(stroke('M'+left(check)+' '+check.y+' H'+(right(monitor)+3), arrow));
+      overlays.push(stroke('M'+right(check)+' '+check.y+' H'+(stage.clientWidth-10)+' V'+trim.y+' H'+(right(trim)+3), { arrow: true, dashed: true }));
+      overlays.push(edgeLabel('clear', (monitor.x+check.x)/2, check.y-13));
+    } else {
+      overlays.push(svgElement('rect', { x: 13, y: 28, width: stage.clientWidth - 26, height: 170, rx: 11, class: 'mm-frame' }));
+      overlays.push(edgeLabel('Signal path', 58, 48));
+      overlays.push(pathBetween(mic, trim), pathBetween(trim, check));
+      const route = state.properties['connector:route'] || 'Right angle';
+      const head = state.properties['connector:arrow'] || 'End';
+      const middle = (right(check) + left(monitor)) / 2;
+      const direct = 'M'+right(check)+' '+check.y+' H'+(left(monitor)-3);
+      const curved = 'M'+right(check)+' '+check.y+' Q'+middle+' '+(check.y-25)+' '+(left(monitor)-3)+' '+monitor.y;
+      const output = stroke(route === 'Curve' ? curved : direct, { arrow: head !== 'None' });
+      if (head === 'Both') output.setAttribute('marker-start', 'url(#mm-preview-arrow)');
+      overlays.push(output);
+      overlays.push(stroke('M'+check.x+' '+(check.y+24)+' V162 H'+trim.x+' V'+(trim.y+25), { arrow: true, dashed: true }));
+      overlays.push(edgeLabel('adjust', (trim.x+check.x)/2, 176), edgeLabel('clear', (check.x+monitor.x)/2, check.y-13));
+    }
+    [dry, room].forEach(child => {
+      const split = (right(takes) + left(child)) / 2;
+      overlays.push(stroke('M'+right(takes)+' '+takes.y+' H'+split+' V'+child.y+' H'+left(child)));
+    });
+    if (!compact) {
+      const x = listen.x - 48, y = listen.y + 52;
+      overlays.push(stroke('M'+x+' '+y+' q9 -1 14 -10 q5 -8 10 5 t10 -2 t10 -4 t9 8 t9 -8 t11 5'));
+    }
+    return overlays;
+  }
+
+  function renderBoard() {
+    const objects = getObjects();
+    find('.mm-blank').hidden = objects.length !== 0;
+    find('[data-title]').textContent = state.board === 'example' ? 'Studio routing' : 'Untitled board';
+    const positions = layoutObjects(objects);
+    const activeElement = document.activeElement;
+    const focusedNode = nodeLayer.contains(activeElement) ? activeElement.dataset.node : '';
+    const buttons = objects.map(object => {
+      const position = positions[object.id];
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'mm-node';
+      button.dataset.node = object.id;
+      const type = state.properties[object.id + ':type'];
+      button.dataset.kind = type === 'Note' ? 'note' : type === 'Text' ? 'text' : object.kind;
+      button.dataset.colour = state.properties[object.id + ':colour'] || 'Default';
+      const locked = state.properties[object.id + ':position'] === 'Locked';
+      button.dataset.locked = String(locked);
+      button.style.left = position.x + 'px';
+      button.style.top = position.y + 'px';
+      button.style.width = position.w + 'px';
+      setPressed(button, state.selected === object.id);
+      const title = document.createElement('strong');
+      title.textContent = object.title;
+      button.append(title);
+      if (object.note || locked) {
+        const note = document.createElement('small');
+        note.textContent = [object.note, locked ? 'Locked' : ''].filter(Boolean).join(' · ');
+        button.append(note);
+      }
+      return button;
+    });
+    nodeLayer.replaceChildren(...buttons);
+    edgeLayer.replaceChildren(...(state.board === 'example' ? flowElements(positions) : []));
+    if (focusedNode) buttons.find(button => button.dataset.node === focusedNode)?.focus({ preventScroll: true });
+    root.querySelectorAll('[data-board][aria-current]').forEach(button => button.setAttribute('aria-current', String(button.dataset.board === state.board)));
+    root.querySelectorAll('[data-board][aria-pressed]').forEach(button => setPressed(button, button.dataset.board === state.board));
+    find('.mm-world').style.transform = 'scale(' + state.zoom + ')';
+    find('[data-zoom]').textContent = Math.round(state.zoom * 100) + '%';
+  }
+
+  function inspectorField(label, name, values) {
+    const group = document.createElement('label');
+    group.className = 'mm-form-label';
+    group.textContent = label;
+    const select = document.createElement('select');
+    select.dataset.property = name;
+    values.forEach(value => select.add(new Option(value, value)));
+    const subject = state.tool === 'link' && state.board === 'example' ? 'connector' : state.selected;
+    select.value = state.properties[subject + ':' + name] || values[0];
+    group.append(select);
+    return group;
+  }
+
+  function renderInspector() {
+    const object = getObjects().find(idea => idea.id === state.selected);
+    const target = find('[data-properties]');
+    const label = document.createElement('p');
+    label.textContent = state.tool === 'link' && state.board === 'example'
+      ? 'Peak check → Monitor'
+      : object ? object.title : 'Select an object to inspect it.';
+    target.replaceChildren(label);
+    if (!object) return;
+    if (state.tool === 'link' && state.board === 'example') {
+      target.append(inspectorField('Route', 'route', ['Right angle', 'Straight', 'Curve']),
+        inspectorField('Arrow', 'arrow', ['End', 'None', 'Both']));
+      return;
+    }
+    const kinds = { shape: 'Block', decision: 'Decision', branch: 'Mind map node', note: 'Note', text: 'Text', draw: 'Stroke' };
+    target.append(inspectorField('Type', 'type', [kinds[object.kind], 'Text', 'Note'].filter((value, i, all) => all.indexOf(value) === i)),
+      inspectorField('Colour', 'colour', ['Default', 'Blue', 'Green', 'Amber']),
+      inspectorField('Position', 'position', ['Unlocked', 'Locked']));
+  }
+
+  function renderPanels() {
+    const compact = windowFrame.clientWidth <= 760;
+    const alertOpen = !find('[data-alert]').hidden;
+    const panelsAllowed = !state.focus && !(alertOpen && windowFrame.clientWidth <= 1060);
+    const inspector = panelsAllowed && state.inspector;
+    const boards = panelsAllowed && (state.boards ?? !compact) && !(compact && inspector);
+    find('.mm-sidebar').hidden = !boards;
+    find('.mm-inspector').hidden = !inspector;
+    windowControls.boards.setAttribute('aria-expanded', String(boards));
+    windowControls.inspector.setAttribute('aria-expanded', String(inspector));
+    windowControls.boards.disabled = alertOpen && windowFrame.clientWidth <= 1060;
+    windowControls.inspector.disabled = windowControls.boards.disabled;
+    setPressed(find('[data-action="focus"]'), state.focus);
+  }
+
+  function chooseBoard(board) {
+    state.board = board;
+    state.selected = board === 'example' ? 'trim' : state.blankKind ? 'new' : '';
+    state.zoom = 1;
+    if (windowFrame.clientWidth <= 760) state.boards = false;
+    renderPanels();
+    renderBoard();
+    renderInspector();
+  }
+
+  function chooseTool(tool) {
+    state.tool = tool;
+    root.querySelectorAll('[data-tool]').forEach(button => setPressed(button, button.dataset.tool === tool));
+    renderInspector();
+  }
+
+  function startBlank(kind) {
+    state.blankKind = kind;
+    chooseBoard('blank');
+    chooseTool('select');
+    find('[data-node="new"]')?.focus();
+  }
+
+  function setStatus(status) {
+    root.dataset.status = status;
+    find('[data-control="status"]').value = status;
+    find('[data-save]').textContent = saveLabels[status];
+    const isRecovery = status === 'recovery';
+    find('[data-alert]').hidden = status !== 'failed' && !isRecovery;
+    find('[data-alert-text]').textContent = isRecovery
+      ? 'A backup from 10:03 am is available.'
+      : 'Couldn’t save this board. Your edits are still open.';
+    find('[data-alert-action]').textContent = isRecovery ? 'Open a copy' : 'Try again';
+    renderPanels();
+  }
+
+  function toggleExport(open) {
+    find('.mm-export').hidden = !open;
+    windowControls.export.setAttribute('aria-expanded', String(open));
+    if (open) find('[data-format]').focus();
+  }
+
+  const actions = {
+    boards() {
+      state.focus = false;
+      state.boards = find('.mm-sidebar').hidden;
+      if (state.boards && windowFrame.clientWidth <= 760) state.inspector = false;
+      renderPanels();
+    },
+    inspector() {
+      state.focus = false;
+      state.inspector = find('.mm-inspector').hidden;
+      if (state.inspector && windowFrame.clientWidth <= 760) state.boards = false;
+      renderPanels();
+      renderInspector();
+    },
+    'close-inspector'() {
+      state.inspector = false;
+      renderPanels();
+      windowControls.inspector.focus();
+    },
+    focus() { state.focus = !state.focus; renderPanels(); },
+    grid() {
+      root.dataset.grid = root.dataset.grid === 'off' ? 'on' : 'off';
+      setPressed(find('[data-action="grid"]'), root.dataset.grid === 'on');
+    },
+    export() { toggleExport(find('.mm-export').hidden); },
+    recover() { setStatus('saved'); find('[data-control="status"]').focus(); },
+    in() { state.zoom = Math.min(1.5, state.zoom + .1); renderBoard(); },
+    out() { state.zoom = Math.max(.65, state.zoom - .1); renderBoard(); },
+    fit() { state.zoom = 1; renderBoard(); },
+  };
+
+  root.addEventListener('click', event => {
+    const button = event.target.closest('button');
+    if (!event.target.closest('.mm-export') && button !== windowControls.export) toggleExport(false);
+    if (!button) {
+      if (stage.contains(event.target) && state.board === 'blank' && textForTool[state.tool]) startBlank(state.tool);
+      return;
+    }
+    const { board, tool, node, action, format, add } = button.dataset;
+    if (board) {
+      const inSidebar = button.closest('.mm-sidebar');
+      chooseBoard(board);
+      if (inSidebar?.hidden) windowControls.boards.focus();
+    } else if (tool) chooseTool(tool);
+    else if (node) {
+      state.selected = node;
+      nodeLayer.querySelectorAll('button').forEach(candidate => setPressed(candidate, candidate.dataset.node === state.selected));
+      renderInspector();
+    } else if (add) startBlank(add);
+    else if (format) {
+      toggleExport(false);
+      windowControls.export.focus();
+      find('[data-announcement]').textContent = format + ' chosen in the export preview.';
+    } else if (action) actions[action]();
+  });
+
+  root.addEventListener('change', event => {
+    const { control, property } = event.target.dataset;
+    if (control === 'status') setStatus(event.target.value);
+    else if (control) root.dataset[control] = event.target.value;
+    else if (property) {
+      const subject = state.tool === 'link' && state.board === 'example' ? 'connector' : state.selected;
+      state.properties[subject + ':' + property] = event.target.value;
+      renderBoard();
+    }
+  });
+
+  root.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if (!find('.mm-export').hidden) {
+      toggleExport(false);
+      windowControls.export.focus();
+    } else if (event.target.closest('.mm-inspector')) actions['close-inspector']();
+    else if (event.target.closest('.mm-sidebar') && windowFrame.clientWidth <= 760) {
+      state.boards = false;
+      renderPanels();
+      windowControls.boards.focus();
+    }
+    else if (state.tool !== 'select') chooseTool('select');
+  });
+
+  if (globalThis.Tweak) {
+    const review = { radius: 7 };
+    const tweak = new Tweak({
+      container: windowFrame,
+      onChange() { root.style.setProperty('--mm-node-radius', review.radius + 'px'); },
+    });
+    tweak.addSlider(review, 'radius', { label: 'Block corner radius', min: 2, max: 18, unit: 'px' });
+  }
+
+  new ResizeObserver(() => { renderPanels(); renderBoard(); }).observe(stage);
+  renderPanels();
+  renderBoard();
+  renderInspector();
+})();
+</script>
