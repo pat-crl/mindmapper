@@ -4,28 +4,31 @@ const BoardGeometry = (() => {
   const fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   const context = document.createElement('canvas').getContext('2d');
   const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter() : null;
-  const measure = (text, size) => {
-    context.font = size + 'px ' + fontFamily;
+  const measure = (text, size, style = {}) => {
+    const weight = style.fontWeight === 'bold' ? 'bold' : 'normal';
+    const slant = style.italic ? 'italic' : 'normal';
+    context.font = slant + ' ' + weight + ' ' + size + 'px ' + fontFamily;
     return context.measureText(text).width;
   };
 
-  function linesFor(text, width, size) {
+  function linesFor(text, width, size, style) {
     const graphemes = value => segmenter
       ? Array.from(segmenter.segment(value), item => item.segment)
       : Array.from(value);
+    const fits = value => measure(value, size, style) <= width;
     return text.replace(/\r\n?/g, '\n').split('\n').flatMap(paragraph => {
-      if (measure(paragraph, size) <= width) return [paragraph];
+      if (fits(paragraph)) return [paragraph];
       const lines = [];
       let line = '';
       for (const token of paragraph.match(/\s+|\S+/gu) || []) {
-        if (line && measure(line + token, size) > width) {
+        if (line && !fits(line + token)) {
           lines.push(line);
           line = '';
         }
-        if (measure(token, size) <= width) line += token;
+        if (fits(token)) line += token;
         else {
           for (const letter of graphemes(token)) {
-            if (line && measure(line + letter, size) > width) {
+            if (line && !fits(line + letter)) {
               lines.push(line);
               line = '';
             }
@@ -41,10 +44,31 @@ const BoardGeometry = (() => {
   function box(object) {
     const size = object.style.fontSize || 13;
     const lineHeight = size * 1.25;
-    const lines = object.type === 'stroke' ? [] : linesFor(object.text, Math.max(8, object.width - 22), size);
+    const shape = object.type === 'shape' ? (object.shape || 'rounded') : null;
+    const insetRatio = shape === 'decision' ? .5 : shape === 'circle' ? .68 : 1;
+    const nominalWidth = shape === 'circle' ? Math.max(object.width, object.height) : object.width;
+    const padding = insetRatio < 1 ? 8 : 22;
+    const textWidth = Math.max(8, nominalWidth * insetRatio - padding);
+    const lines = object.type === 'stroke' || shape === 'line'
+      ? [] : linesFor(object.text, textWidth, size, object.style);
     const textHeight = lines.length * lineHeight;
-    const height = Math.max(object.height, textHeight + 16);
-    return { ...object, height, size, lineHeight, lines, textHeight };
+    const minimumHeight = lines.length ? textHeight / insetRatio + 16 : 0;
+    const height = Math.max(object.height, minimumHeight, shape === 'circle' ? nominalWidth : 0);
+    const width = shape === 'circle' ? height : object.width;
+    const textAlign = insetRatio === 1 ? 'left' : 'center';
+    const textInset = textAlign === 'center' ? Math.max(0, (width - textWidth) / 2) : 11;
+    const textPosition = object.type === 'group' || object.type === 'note' ? 'start' : 'center';
+    return { ...object, width, height, size, lineHeight, lines, textHeight, textAlign, textInset, textPosition };
+  }
+
+  function textStyle(object) {
+    const layout = object.lines ? object : box(object);
+    return {
+      fontSize: layout.size + 'px', fontWeight: layout.style.fontWeight || 'normal',
+      fontStyle: layout.style.italic ? 'italic' : 'normal', lineHeight: layout.lineHeight + 'px',
+      textAlign: layout.textAlign, paddingInline: Math.max(0, layout.textInset - 1) + 'px',
+      alignContent: layout.textPosition,
+    };
   }
 
   function center(rect) {
@@ -58,6 +82,16 @@ const BoardGeometry = (() => {
     const dy = oy - cy;
     const facing = Math.abs(dx) / rect.width >= Math.abs(dy) / rect.height
       ? (dx >= 0 ? 'right' : 'left') : (dy >= 0 ? 'bottom' : 'top');
+    if (rect.type === 'shape' && rect.shape === 'line') {
+      const [start, finish] = lineEnds(rect);
+      const sideOfLine = side === 'auto' ? facing : side;
+      const startsHere = sideOfLine === 'left' || sideOfLine === (rect.lineDirection === 'up' ? 'bottom' : 'top');
+      const [x, y] = startsHere ? start : finish;
+      const vx = finish[0] - start[0], vy = finish[1] - start[1];
+      const distance = Math.hypot(vx, vy);
+      const direction = startsHere ? -1 : 1;
+      return [x, y, direction * vx / distance, direction * vy / distance];
+    }
     const ports = {
       left: [rect.x, cy, -1, 0],
       right: [rect.x + rect.width, cy, 1, 0],
@@ -171,8 +205,8 @@ const BoardGeometry = (() => {
 
   function palette() {
     return matchMedia('(prefers-color-scheme: dark)').matches
-      ? { paper: '#1e1e1e', panel: '#29292d', ink: '#e8e8ed', line: '#48484e', wire: '#aaaab4', blue: '#82b9ff' }
-      : { paper: '#ffffff', panel: '#f5f5f7', ink: '#242426', line: '#dedee4', wire: '#71717a', blue: '#005fc4' };
+      ? { paper: '#1e1e1e', panel: '#29292d', note: '#343126', ink: '#e8e8ed', line: '#48484e', wire: '#aaaab4', blue: '#82b9ff' }
+      : { paper: '#ffffff', panel: '#f5f5f7', note: '#fff9e7', ink: '#242426', line: '#dedee4', wire: '#71717a', blue: '#005fc4' };
   }
 
   const encode = value => String(value)
@@ -199,29 +233,66 @@ const BoardGeometry = (() => {
       + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
   }
 
+  function lineEnds({ x, y, width, height, lineDirection }) {
+    const bottom = y + height;
+    return lineDirection === 'up'
+      ? [[x, bottom], [x + width, y]] : [[x, y], [x + width, bottom]];
+  }
+
+  function shapeMarkup(object, colors) {
+    const { x, y, width, height, style, type } = object;
+    const shape = type === 'shape' ? (object.shape || 'rounded') : null;
+    const empty = type === 'text' || type === 'group';
+    const fill = safeColor(style.fill, empty ? 'none' : type === 'note' ? (colors.note || colors.panel) : colors.paper);
+    const stroke = safeColor(style.stroke, type === 'text' ? 'none' : colors.line);
+    const paint = ' fill="' + fill + '" stroke="' + stroke + '"';
+    if (shape === 'line') {
+      const [[x1, y1], [x2, y2]] = lineEnds(object);
+      return '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="'
+        + safeColor(style.stroke, colors.wire) + '" stroke-width="1.5" stroke-linecap="round"/>';
+    }
+    if (shape === 'decision') {
+      const points = [[x + width / 2, y], [x + width, y + height / 2],
+        [x + width / 2, y + height], [x, y + height / 2]];
+      return '<polygon points="' + points.map(point => point.join(',')).join(' ') + '"' + paint + '/>';
+    }
+    if (shape === 'circle') {
+      return '<circle cx="' + (x + width / 2) + '" cy="' + (y + height / 2)
+        + '" r="' + Math.min(width, height) / 2 + '"' + paint + '/>';
+    }
+    if (fill === 'none' && stroke === 'none') return '';
+    const radius = shape === 'rectangle' ? 0 : type === 'branch' ? 10 : 7;
+    const dash = type === 'group' ? ' stroke-dasharray="5 5"' : '';
+    return '<rect x="' + x + '" y="' + y + '" width="' + width + '" height="' + height
+      + '" rx="' + radius + '"' + paint + dash + '/>';
+  }
+
   function svg(drawing, title, colors = palette()) {
     const area = bounds(drawing);
     const viewBox = [area.x, area.y, area.width, area.height].join(' ');
     const background = '<rect x="' + area.x + '" y="' + area.y + '" width="' + area.width
       + '" height="' + area.height + '" fill="' + colors.paper + '"/>';
+    const frames = drawing.objects.filter(object => object.type === 'group').map(object => shapeMarkup(object, colors)).join('');
     const objects = drawing.objects.map(object => {
       const group = '<g data-object-id="' + encode(object.id) + '">';
       if (object.type === 'stroke') return group + strokeMarkup(object, colors) + '</g>';
-      const fill = safeColor(object.style.fill, object.type === 'text' || object.type === 'group' ? 'none' : colors.paper);
-      const stroke = safeColor(object.style.stroke, object.type === 'text' ? 'none' : colors.line);
-      const shape = '<rect x="' + object.x + '" y="' + object.y + '" width="' + object.width
-        + '" height="' + object.height + '" rx="7" fill="' + fill + '" stroke="' + stroke + '"/>';
-      const textY = object.y + (object.type === 'group' ? 7 : (object.height - object.textHeight) / 2);
-      const words = object.lines.map((line, i) => '<text x="' + (object.x + 11) + '" y="'
+      const shape = object.type === 'group' ? '' : shapeMarkup(object, colors);
+      const textY = object.y + (object.textPosition === 'start' ? 8 : (object.height - object.textHeight) / 2);
+      const centered = object.textAlign === 'center';
+      const textX = object.x + (centered ? object.width / 2 : object.textInset);
+      const weight = object.style.fontWeight === 'bold' ? ' font-weight="bold"' : '';
+      const italic = object.style.italic ? ' font-style="italic"' : '';
+      const anchor = centered ? ' text-anchor="middle"' : '';
+      const words = object.lines.map((line, i) => '<text x="' + textX + '" y="'
         + (textY + object.size + i * object.lineHeight) + '" xml:space="preserve" font-size="' + object.size
-        + '" fill="' + safeColor(object.style.textColor, colors.ink) + '">' + encode(line) + '</text>').join('');
+        + '" fill="' + safeColor(object.style.textColor, colors.ink) + '"' + weight + italic + anchor + '>' + encode(line) + '</text>').join('');
       return group + shape + words + '</g>';
     });
     return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + viewBox + '" width="' + area.width
       + '" height="' + area.height + '" font-family="system-ui, sans-serif"><title>' + encode(title) + '</title>'
-      + background + drawing.edges.map(edge => edgeMarkup(edge, colors, false, false)).join('')
+      + background + frames + drawing.edges.map(edge => edgeMarkup(edge, colors, false, false)).join('')
       + objects.join('') + '</svg>';
   }
 
-  return { measure, box, scene, bounds, palette, edgeMarkup, strokeMarkup, svg };
+  return { measure, box, textStyle, scene, bounds, palette, edgeMarkup, strokeMarkup, shapeMarkup, svg };
 })();

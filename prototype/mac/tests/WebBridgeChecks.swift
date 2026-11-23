@@ -7,6 +7,7 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
     private let resourceRoot: URL
     private let temporary: URL
     private let legacyFixture: URL
+    private let clipboard = NSPasteboard(name: .init("MindMapperChecks-" + UUID().uuidString))
     private var cancelSelection = false
 
     private init(resourceRoot: URL, temporary: URL, legacyFixture: URL) {
@@ -49,7 +50,7 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
     }
 
     private func makeEditor(store: DocumentStore, window: NSWindow) -> WebEditor {
-        let editor = WebEditor(resourceRoot: resourceRoot, store: store, ephemeral: true) { [self] panel, _, selection in
+        let editor = WebEditor(resourceRoot: resourceRoot, store: store, ephemeral: true, pasteboard: clipboard) { [self] panel, _, selection in
             if cancelSelection {
                 cancelSelection = false
                 selection(nil)
@@ -95,6 +96,7 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
     }
 
     private func runChecks() async throws {
+        defer { clipboard.releaseGlobally() }
         let directory = temporary.appendingPathComponent("Native workspace", isDirectory: true)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -171,12 +173,37 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
         try check(String(contentsOf: temporary.appendingPathComponent("Export.svg"), encoding: .utf8) == svg,
                   "Cancelling export changed the prior export.")
 
+        _ = try await editor.webView.callAsyncJavaScript(
+            "document.activeElement?.blur(); return true;", contentWorld: .page
+        )
+        try await check(editor.perform("selectAll") as? Bool == true, "Select All did not select the example board.")
+        try await check(editor.perform("copy") as? Bool == true, "The canvas could not copy to a scratch Mac pasteboard.")
+        let copied = WebEditor.readClipboard(from: clipboard)
+        try check(copied["selection"] != nil && copied["text"]?.contains("Prototype note") == true,
+                  "The clipboard did not provide both the structured board selection and readable text.")
+        _ = try await editor.perform("new")
+        try await check(editor.perform("paste") as? Bool == true, "The workspace could not paste a board selection.")
+        try await check(editor.perform("save") as? Bool == true, "The pasted objects did not save.")
+        let newID = try json(at: store.libraryURL)["activeBoardId"] as? String
+        let pasted = try boards(at: store.libraryURL).first { $0["id"] as? String == newID }
+        let oldObjects = active?["objects"] as? [[String: Any]] ?? []
+        let pastedObjects = pasted?["objects"] as? [[String: Any]] ?? []
+        let oldIDs = Set(oldObjects.compactMap { $0["id"] as? String })
+        let pastedIDs = Set(pastedObjects.compactMap { $0["id"] as? String })
+        try check(pastedObjects.count == oldObjects.count && oldIDs.isDisjoint(with: pastedIDs)
+                  && (pasted?["links"] as? [[String: Any]])?.count == (active?["links"] as? [[String: Any]])?.count,
+                  "The Mac clipboard paste did not remap the objects and preserve their connections.")
+        try await check(editor.perform("copyRich") as? Bool == true, "The board outline could not copy as rich text.")
+        let rich = WebEditor.readClipboard(from: clipboard)
+        try check(rich["html"]?.contains("<ul>") == true && rich["text"]?.contains("- ") == true,
+                  "Rich outline copy did not provide nested HTML and readable text.")
+
         let original = try Data(contentsOf: store.libraryURL)
         let reopened = makeEditor(store: DocumentStore(directory: directory), window: window)
         try await waitUntilReady(reopened)
         try await check(reopened.perform("save") as? Bool == true, "The recreated WKWebView could not save the reopened workspace.")
         try check(Data(contentsOf: store.libraryURL) == original, "Reopening the workspace changed the saved board.")
 
-        print("Mac WKWebView checks passed: native load/save, legacy import, cancelled import/export, mixed objects, multiline DOM edit, undo/redo, editable/SVG export and a fresh editor reopen.")
+        print("Mac WKWebView checks passed: native load/save, legacy import, cancelled import/export, mixed edits, undo/redo, vector export, scratch clipboard with linked paste and rich text, and fresh reopen.")
     }
 }

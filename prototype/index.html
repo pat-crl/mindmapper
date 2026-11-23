@@ -9,6 +9,8 @@
   <script defer src="../src/model.js"></script>
   <script defer src="board.js"></script>
   <script defer src="geometry.js"></script>
+  <script defer src="arrangement.js"></script>
+  <script defer src="workflows.js"></script>
   <script defer src="workspace.js"></script>
 </head>
 <body>
@@ -20,6 +22,7 @@
     </div>
     <button type="button" data-command="undo" aria-label="Undo" disabled>↶</button>
     <button type="button" data-command="redo" aria-label="Redo" disabled>↷</button>
+    <button type="button" data-command="find" aria-controls="find-panel" aria-expanded="false">Find</button>
     <button type="button" data-command="inspector" aria-pressed="false" aria-controls="inspector">Inspector</button>
     <button type="button" class="accent" popovertarget="export-menu">Export</button>
     <div id="export-menu" popover>
@@ -30,8 +33,19 @@
   <div class="workspace">
     <aside id="library" aria-label="Board library">
       <div class="panel-title"><h2>Boards</h2><button type="button" data-command="new" aria-label="New board">+</button></div>
+      <input id="library-search" class="panel-search" type="search" placeholder="Find boards" aria-label="Find boards">
       <nav id="board-list" aria-label="Saved boards"></nav>
       <div class="library-actions">
+        <button type="button" popovertarget="starters">Start from template</button>
+        <div id="starters" class="popup" popover>
+          <button type="button" data-starter="mindmap">Mind map</button>
+          <button type="button" data-starter="flowchart">Flowchart</button>
+          <button type="button" data-starter="signal">Signal flow</button>
+        </div>
+        <button type="button" data-command="renameBoard">Rename board</button>
+        <button type="button" data-command="duplicateBoard">Duplicate board</button>
+        <button type="button" data-command="previousBoard" disabled>Previous board</button>
+        <button type="button" data-command="removeBoard">Delete board…</button>
         <button type="button" data-command="open">Import</button>
         <button type="button" data-command="example">Example board</button>
       </div>
@@ -41,7 +55,11 @@
         <div id="world">
           <svg id="diagram" aria-hidden="true"></svg>
           <div id="objects" aria-label="Board objects"></div>
-          <textarea id="object-editor" aria-label="Object text" spellcheck="true" hidden></textarea>
+          <svg id="stroke-preview" aria-hidden="true"></svg>
+          <div id="marquee" hidden></div>
+          <div id="guides" aria-hidden="true"></div>
+          <div id="handles"></div>
+          <textarea id="object-editor" aria-label="Object text" maxlength="20000" spellcheck="true" hidden></textarea>
         </div>
       </div>
       <div id="empty" hidden>
@@ -52,16 +70,50 @@
       <div class="tools floating" role="group" aria-label="Canvas tools">
         <button type="button" data-tool="select" aria-pressed="true" title="Select or move">Select</button>
         <button type="button" data-tool="text" aria-pressed="false" title="Place text">Text</button>
+        <button type="button" data-tool="note" aria-pressed="false" title="Place a note">Note</button>
         <button type="button" data-tool="shape" aria-pressed="false" title="Place a block">Shape</button>
+        <button type="button" class="tool-caret" popovertarget="shapes" aria-label="Shape options">▾</button>
+        <div id="shapes" class="popup" popover>
+          <button type="button" data-shape="rectangle">Rectangle</button>
+          <button type="button" data-shape="rounded">Rounded box</button>
+          <button type="button" data-shape="decision">Decision</button>
+          <button type="button" data-shape="circle">Circle</button>
+          <button type="button" data-shape="line">Line</button>
+        </div>
+        <button type="button" data-tool="group" aria-pressed="false" title="Place a frame">Frame</button>
         <button type="button" data-tool="branch" aria-pressed="false" title="Place a branch root">Branch</button>
         <button type="button" data-tool="link" aria-pressed="false" title="Select two objects to connect">Connect</button>
         <button type="button" data-tool="draw" aria-pressed="false" title="Draw a stroke">Draw</button>
+        <button type="button" popovertarget="edit-menu">Edit</button>
+        <div id="edit-menu" class="popup" popover>
+          <button type="button" data-command="cut">Cut</button>
+          <button type="button" data-command="copy">Copy</button>
+          <button type="button" data-command="paste">Paste</button>
+          <button type="button" data-command="duplicate">Duplicate selection</button>
+          <button type="button" data-command="outline">Paste outline…</button>
+          <button type="button" data-command="copyMarkdown">Copy Markdown</button>
+          <button type="button" data-command="copyRich">Copy rich text</button>
+        </div>
       </div>
       <div class="view floating" role="group" aria-label="Canvas view">
         <button type="button" data-command="zoomOut" aria-label="Zoom out">−</button>
         <output id="zoom">100%</output>
         <button type="button" data-command="zoomIn" aria-label="Zoom in">+</button>
-        <button type="button" data-command="fit">Fit</button>
+        <button type="button" data-command="fit" title="Fit whole board">Fit</button>
+        <button type="button" data-command="fitSelection">Fit selection</button>
+        <button type="button" data-command="centre" title="Centre on the canvas origin">Centre</button>
+      </div>
+      <div class="snaps floating" role="group" aria-label="Board grid and snapping">
+        <button type="button" data-command="grid" aria-pressed="true" title="Show or hide grid">Grid</button>
+        <button type="button" data-command="snapGrid" aria-pressed="false" title="Snap movement to grid">Snap grid</button>
+        <button type="button" data-command="snapObjects" aria-pressed="true" title="Snap to nearby objects">Snap objects</button>
+      </div>
+      <div id="find-panel" class="floating" hidden role="region" aria-label="Find in board">
+        <div class="find-heading">
+          <input id="board-find" type="search" placeholder="Find on this board" aria-label="Find on this board">
+          <button type="button" data-command="closeFind" aria-label="Close find">×</button>
+        </div>
+        <div id="find-results" aria-live="polite"></div>
       </div>
       <div id="notice" class="floating" hidden role="alert">
         <span id="notice-text"></span><button type="button" data-command="save" id="retry" hidden>Try again</button>
@@ -73,6 +125,21 @@
       <div id="properties"></div>
     </aside>
   </div>
+  <dialog id="outline-dialog" aria-labelledby="outline-heading">
+    <form method="dialog">
+      <h2 id="outline-heading">Paste outline</h2>
+      <label for="outline-text">Indented text</label>
+      <textarea id="outline-text" rows="8" required spellcheck="false"></textarea>
+      <footer><button type="submit" value="cancel" formnovalidate>Cancel</button><button type="submit" value="paste" class="accent">Add branches</button></footer>
+    </form>
+  </dialog>
+  <dialog id="delete-dialog" aria-labelledby="delete-heading">
+    <form method="dialog">
+      <h2 id="delete-heading">Delete board?</h2>
+      <p id="delete-title"></p>
+      <footer><button type="submit" value="cancel" autofocus>Cancel</button><button type="submit" value="delete" class="danger">Delete board</button></footer>
+    </form>
+  </dialog>
   <input type="file" id="import-file" accept=".json,.mindmap,application/json" hidden>
 </body>
 </html>

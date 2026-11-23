@@ -7,7 +7,8 @@
   const SCHEMA = 1;
   const MAX_BYTES = legacyModel.MAX_LIBRARY_BYTES;
   const uid = legacyModel.uid;
-  const TYPES = ['text', 'shape', 'branch', 'stroke', 'group'];
+  const TYPES = ['text', 'note', 'shape', 'branch', 'stroke', 'group'];
+  const SHAPES = ['rectangle', 'rounded', 'decision', 'circle', 'line'];
   const PORTS = ['auto', 'left', 'right', 'top', 'bottom'];
   const ROUTES = ['straight', 'curve', 'elbow'];
   const ARROWS = ['none', 'start', 'end', 'both'];
@@ -67,6 +68,14 @@
       textColor: color(value.textColor, 'Text colour'),
     };
     if (value.fontSize !== undefined) style.fontSize = number(value.fontSize, 8, 96, 'Font size');
+    if (value.fontWeight !== undefined) {
+      const weight = value.fontWeight === 400 ? 'normal' : value.fontWeight === 700 ? 'bold' : value.fontWeight;
+      style.fontWeight = pick(weight, ['normal', 'bold'], 'Font weight');
+    }
+    if (value.italic !== undefined) {
+      if (typeof value.italic !== 'boolean') throw new Error('Italic must be on or off.');
+      style.italic = value.italic;
+    }
     return style;
   }
 
@@ -105,6 +114,10 @@
       locked: Boolean(input.locked),
       folded: Boolean(input.folded),
     };
+    if (result.type === 'shape') {
+      result.shape = pick(input.shape, SHAPES, 'Shape', 'rounded');
+      if (result.shape === 'line') result.lineDirection = pick(input.lineDirection, ['down', 'up'], 'Line direction', 'down');
+    }
     if (result.type === 'stroke') {
       result.points = list(input.points, 25000, 'Stroke points', true).map(point => {
         if (!Array.isArray(point) || point.length !== 2) throw new Error('A stroke point must contain x and y.');
@@ -228,6 +241,80 @@
 
   function createWorkspace(board = emptyBoard()) {
     return validateWorkspace({ format: WORKSPACE, version: SCHEMA, activeBoardId: board.id, boards: [board] });
+  }
+
+  function createObject(type, [x, y], options = {}) {
+    pick(type, TYPES, 'Object type');
+    object(options, 'Object options');
+    const sizes = {
+      text: [200, 46], note: [184, 86], shape: [150, 50],
+      branch: [150, 46], group: [286, 185], stroke: [46, 46],
+    };
+    const shapeSizes = { decision: [144, 92], circle: [96, 96], line: [144, 1] };
+    const [width, height] = (type === 'shape' && own(shapeSizes, options.shape) ? shapeSizes[options.shape] : sizes[type]);
+    const defaults = type === 'stroke' ? { points: [[0, 0]] } : {};
+    return boardObject({ id: uid(), width, height, ...defaults, ...options, type, x, y });
+  }
+
+  const starterFactories = {
+    mindmap() {
+      const board = emptyBoard('Mind map');
+      const root = createObject('branch', [-80, -23], { text: 'Main idea', style: { fontWeight: 'bold' } });
+      const branches = [
+        createObject('branch', [-305, -23], { text: 'Questions' }),
+        createObject('branch', [145, -84], { text: 'Ideas' }),
+        createObject('branch', [145, 38], { text: 'Next steps' }),
+      ];
+      board.objects = [root, ...branches];
+      board.branches = branches.map((child, order) => ({
+        id: uid(), parentId: root.id, childId: child.id,
+        side: order === 0 ? 'left' : 'right', order, style: { arrow: 'none' },
+      }));
+      return board;
+    },
+    flowchart() {
+      const board = emptyBoard('Flowchart');
+      const start = createObject('shape', [-314, -25], { shape: 'rounded', text: 'Start' });
+      const decision = createObject('shape', [-74, -46], { shape: 'decision', text: 'Ready?' });
+      const finish = createObject('shape', [174, -25], { shape: 'rounded', text: 'Finish' });
+      const revise = createObject('shape', [-78, 143], { shape: 'rectangle', text: 'Revise' });
+      board.objects = [start, decision, finish, revise];
+      board.links = [
+        starterConnector(start, 'right', decision, 'left'),
+        starterConnector(decision, 'right', finish, 'left', 'Yes'),
+        starterConnector(decision, 'bottom', revise, 'top', 'No'),
+        starterConnector(revise, 'left', start, 'bottom'),
+      ];
+      return board;
+    },
+    signal() {
+      const board = emptyBoard('Signal flow');
+      const frame = createObject('group', [-420, -112], { width: 840, height: 247, text: 'Signal path' });
+      const allow = { shape: 'rectangle', groupId: frame.id };
+      const source = createObject('shape', [-390, -25], { ...allow, text: 'Source' });
+      const processor = createObject('shape', [-75, -25], { ...allow, text: 'Processing' });
+      const output = createObject('shape', [240, -25], { ...allow, text: 'Output' });
+      const note = createObject('note', [-75, 164], { text: 'Patch notes' });
+      board.objects = [frame, source, processor, output, note];
+      board.links = [
+        starterConnector(source, 'right', processor, 'left', 'Input'),
+        starterConnector(processor, 'right', output, 'left', 'Send'),
+        starterConnector(output, 'bottom', processor, 'bottom', 'Return', true),
+      ];
+      return board;
+    },
+  };
+
+  function starterConnector(from, fromPort, to, toPort, label = '', dashed = false) {
+    return {
+      id: uid(), from: { objectId: from.id, port: fromPort }, to: { objectId: to.id, port: toPort },
+      label, style: { route: 'elbow', dashed },
+    };
+  }
+
+  function starterBoard(kind) {
+    if (!own(starterFactories, kind)) throw new Error('Unknown board starter.');
+    return validateBoard(starterFactories[kind]());
   }
 
   function exampleBoard() {
@@ -465,7 +552,7 @@
   }
 
   const api = {
-    SCHEMA, BOARD, WORKSPACE, MAX_BYTES, uid, emptyBoard, exampleBoard, createWorkspace,
+    SCHEMA, BOARD, WORKSPACE, MAX_BYTES, SHAPES, uid, emptyBoard, exampleBoard, createWorkspace, createObject, starterBoard,
     validateBoard, validateWorkspace, importDocument, addImportedBoards,
     descendants, visibleObjects, relayoutBranch, moveObjects, detachBranch, deleteObjects, duplicateBranch,
   };

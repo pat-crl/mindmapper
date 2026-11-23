@@ -3,6 +3,8 @@
 (() => {
   const model = BoardModel;
   const geometry = BoardGeometry;
+  const layout = BoardArrangement;
+  const workflows = BoardWorkflows;
   const $ = selector => document.querySelector(selector);
   const viewport = $('#viewport');
   const world = $('#world');
@@ -12,10 +14,13 @@
   const bridge = window.webkit?.messageHandlers?.mindmapper;
   const storageKey = 'mindmapper-mac-prototype-workspace-v1';
   const ports = ['auto', 'left', 'right', 'top', 'bottom'];
+  const selectionType = 'application/x-mindmapper-selection+json';
+  const gridSize = 18;
   const historyLimit = 8 * 1024 * 1024;
   const state = {
     workspace: null, ids: new Set(), edge: null, tool: 'select', connect: null,
-    edit: null, gesture: null, space: false, prior: [], next: [],
+    edit: null, gesture: null, space: false, prior: [], next: [], previousBoard: null,
+    shape: 'rounded', grid: true, snapGrid: false, snapObjects: true, findMatches: [],
     revision: 0, saved: 0, saving: null, timer: null, baseline: null,
   };
   let currentScene;
@@ -26,6 +31,7 @@
   const copy = value => structuredClone(value);
   const shown = (selector, value) => { $(selector).hidden = !value; };
   const setPressed = (button, value) => button.setAttribute('aria-pressed', String(value));
+  const isTyping = element => Boolean(element?.closest('input, textarea, select, [contenteditable=true]'));
 
   function notice(message, retry = false) {
     $('#notice-text').textContent = message;
@@ -117,7 +123,7 @@
   }
 
   function undo(redo = false) {
-    finishEdit();
+    if (!finishEdit()) return;
     const from = redo ? state.next : state.prior;
     const to = redo ? state.prior : state.next;
     const previous = from.pop();
@@ -159,6 +165,7 @@
       setPressed(button, state.ids.has(button.dataset.object));
       button.dataset.linkSource = String(state.connect === button.dataset.object);
     }
+    renderHandles();
     renderDiagram();
     renderInspector();
   }
@@ -177,6 +184,11 @@
     const x = viewport.clientWidth / 2 + view.x + (pan?.dx || 0);
     const y = viewport.clientHeight / 2 + view.y + (pan?.dy || 0);
     world.style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + view.zoom + ')';
+    world.style.setProperty('--inverse-zoom', 1 / view.zoom);
+    const spacing = gridSize * view.zoom;
+    viewport.style.setProperty('--grid-dot', Math.min(.85, Math.max(.42, .75 * view.zoom)) + 'px');
+    viewport.style.backgroundSize = spacing + 'px ' + spacing + 'px';
+    viewport.style.backgroundPosition = (x - spacing / 2) + 'px ' + (y - spacing / 2) + 'px';
     $('#zoom').textContent = Math.round(view.zoom * 100) + '%';
   }
 
@@ -190,9 +202,15 @@
     schedule();
   }
 
-  function fit() {
-    const area = geometry.bounds(currentScene);
-    const zoom = Math.min(1.5, (viewport.clientWidth - 20) / area.width, (viewport.clientHeight - 60) / area.height);
+  function selectionArea() {
+    const objects = currentScene.objects.filter(item => state.ids.has(item.id));
+    const edges = currentScene.edges.filter(edge => edge.id === state.edge);
+    return objects.length || edges.length ? geometry.bounds({ objects, edges }) : null;
+  }
+
+  function fit(area = geometry.bounds(currentScene)) {
+    const inset = Math.max(58, $('.tools').offsetHeight + 16);
+    const zoom = Math.min(1.5, (viewport.clientWidth - 20) / area.width, (viewport.clientHeight - 2 * inset) / area.height);
     const value = Math.max(.1, zoom);
     withView({ zoom: value, x: -(area.x + area.width / 2) * value, y: -(area.y + area.height / 2) * value });
   }
@@ -207,21 +225,94 @@
   function displayBoard() {
     const active = board();
     const drag = state.gesture;
+    if (drag?.kind === 'resize') {
+      return { ...active, objects: active.objects.map(object => object.id === drag.object.id
+        ? resizeObject(object, drag) : object) };
+    }
     if (drag?.kind !== 'move' || (!drag.dx && !drag.dy)) return active;
     const draft = { ...active, objects: active.objects.map(object => ({ ...object })) };
-    model.moveObjects(draft, drag.ids, drag.dx, drag.dy);
+    layout.move(draft, drag.ids, drag.dx, drag.dy);
     return draft;
+  }
+
+  function resizeObject(object, drag) {
+    const { rect, corner, dx, dy } = drag;
+    const left = corner.endsWith('w');
+    const top = corner.startsWith('n');
+    const line = object.shape === 'line';
+    let width = Math.min(1e6, Math.max(line ? 6 : 36, rect.width + (left ? -dx : dx)));
+    let height = Math.min(1e6, Math.max(line ? 1 : 24, rect.height + (top ? -dy : dy)));
+    if (object.shape === 'circle' || drag.keepRatio) {
+      const scaleX = width / rect.width, scaleY = height / rect.height;
+      const scale = Math.abs(scaleX - 1) > Math.abs(scaleY - 1) ? scaleX : scaleY;
+      width = rect.width * scale;
+      height = rect.height * scale;
+    }
+    const box = geometry.box({ ...object, width, height });
+    const updated = { ...object, width: box.width, height: box.height,
+      x: left ? rect.x + rect.width - box.width : rect.x,
+      y: top ? rect.y + rect.height - box.height : rect.y };
+    if (object.points) updated.points = object.points.map(([x, y]) => [x * box.width / rect.width, y * box.height / rect.height]);
+    return updated;
+  }
+
+  function renderHandles() {
+    const layer = $('#handles');
+    const selected = state.ids.size === 1 && currentScene.objects.find(object => state.ids.has(object.id));
+    const focus = document.activeElement?.dataset.corner;
+    if (!selected || selected.locked || state.edit || state.tool !== 'select') {
+      layer.replaceChildren();
+      return;
+    }
+    const corners = selected.shape === 'line'
+      ? (selected.lineDirection === 'up' ? { sw: [0, 1], ne: [1, 0] } : { nw: [0, 0], se: [1, 1] })
+      : { nw: [0, 0], ne: [1, 0], sw: [0, 1], se: [1, 1] };
+    const handles = Object.entries(corners).map(([corner, [x, y]]) => {
+      const handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'handle';
+      handle.dataset.corner = corner;
+      handle.setAttribute('aria-label', 'Resize ' + corner.toUpperCase() + ' corner');
+      handle.style.left = selected.x + x * selected.width + 'px';
+      handle.style.top = selected.y + y * selected.height + 'px';
+      return handle;
+    });
+    layer.replaceChildren(...handles);
+    if (focus) handles.find(handle => handle.dataset.corner === focus)?.focus({ preventScroll: true });
+  }
+
+  function renderGuides() {
+    const drag = state.gesture;
+    const lines = [];
+    if (drag?.kind === 'move' && drag.guides) {
+      const view = board().view;
+      const left = -(viewport.clientWidth / 2 + view.x) / view.zoom;
+      const top = -(viewport.clientHeight / 2 + view.y) / view.zoom;
+      for (const axis of ['x', 'y']) {
+        const value = drag.guides[axis + 'Guide'];
+        if (!Number.isFinite(value)) continue;
+        const line = document.createElement('div');
+        line.className = 'guide';
+        line.dataset.axis = axis;
+        line.style.left = (axis === 'x' ? value : left) + 'px';
+        line.style.top = (axis === 'y' ? value : top) + 'px';
+        line.style.width = (axis === 'x' ? 1 : viewport.clientWidth / view.zoom) + 'px';
+        line.style.height = (axis === 'y' ? 1 : viewport.clientHeight / view.zoom) + 'px';
+        lines.push(line);
+      }
+    }
+    $('#guides').replaceChildren(...lines);
   }
 
   function renderDiagram() {
     const colors = geometry.palette();
     const drawing = currentScene;
-    let markup = drawing.objects.filter(object => object.type === 'stroke').map(object => geometry.strokeMarkup(object, colors)).join('');
+    let markup = drawing.objects.filter(object => object.type === 'group').map(object => geometry.shapeMarkup(object, colors)).join('');
     markup += drawing.edges.map(edge => geometry.edgeMarkup(edge, colors, true, edge.id === state.edge)).join('');
-    if (state.gesture?.kind === 'stroke') {
-      markup += geometry.strokeMarkup({ x: 0, y: 0, points: state.gesture.points, style: { stroke: colors.blue } }, colors);
-    }
     diagram.innerHTML = markup;
+    $('#stroke-preview').innerHTML = state.gesture?.kind === 'stroke'
+      ? geometry.strokeMarkup({ x: 0, y: 0, points: state.gesture.points, style: { stroke: colors.blue } }, colors)
+      : '';
   }
 
   function setBounds(element, object) {
@@ -229,12 +320,13 @@
     element.style.top = object.y + 'px';
     element.style.width = object.width + 'px';
     element.style.height = object.height + 'px';
-    element.style.fontSize = object.size + 'px';
+    Object.assign(element.style, geometry.textStyle(object));
   }
 
   function renderWorld() {
     currentScene = geometry.scene(displayBoard());
     const focused = document.activeElement?.dataset.object;
+    const palette = geometry.palette();
     const nodes = currentScene.objects.map(object => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -246,8 +338,19 @@
       button.setAttribute('aria-label', [object.text || object.type, object.locked && 'locked', object.folded && 'folded'].filter(Boolean).join(', '));
       setPressed(button, state.ids.has(object.id));
       setBounds(button, object);
-      if (object.style.fill && object.type !== 'stroke') button.style.backgroundColor = object.style.fill;
-      if (object.style.stroke && object.type !== 'stroke') button.style.borderColor = object.style.stroke;
+      if (object.type === 'shape' || object.type === 'note' || object.type === 'stroke') {
+        const figure = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        figure.setAttribute('class', 'figure');
+        figure.setAttribute('aria-hidden', 'true');
+        figure.setAttribute('viewBox', [object.x, object.y, object.width, object.height].join(' '));
+        figure.innerHTML = object.type === 'stroke'
+          ? geometry.strokeMarkup(object, palette) : geometry.shapeMarkup(object, palette);
+        button.append(figure);
+        if (object.shape === 'line') button.classList.add('line-object');
+      } else if (object.type !== 'group') {
+        if (object.style.fill) button.style.backgroundColor = object.style.fill;
+        if (object.style.stroke) button.style.borderColor = object.style.stroke;
+      }
       if (object.style.textColor) button.style.color = object.style.textColor;
       for (const line of object.lines) {
         const span = document.createElement('span');
@@ -260,6 +363,8 @@
     });
     objectLayer.replaceChildren(...nodes);
     if (focused && !state.edit) nodes.find(button => button.dataset.object === focused)?.focus({ preventScroll: true });
+    renderHandles();
+    renderGuides();
     renderDiagram();
     viewTransform();
     shown('#empty', board().objects.length === 0 && state.tool === 'select');
@@ -270,7 +375,8 @@
     const active = board();
     const focus = document.activeElement?.dataset.board;
     const nav = $('#board-list');
-    const entries = state.workspace.boards.map(item => {
+    const query = $('#library-search').value.trim().toLocaleLowerCase();
+    const entries = state.workspace.boards.filter(item => item.title.toLocaleLowerCase().includes(query)).map(item => {
       const button = document.createElement('button');
       button.type = 'button';
       button.dataset.board = item.id;
@@ -283,8 +389,10 @@
     if (document.activeElement !== $('#board-title')) $('#board-title').value = active.title;
     $('button[data-command="undo"]').disabled = state.prior.length === 0;
     $('button[data-command="redo"]').disabled = state.next.length === 0;
+    $('button[data-command="previousBoard"]').disabled = !state.previousBoard || !state.workspace.boards.some(item => item.id === state.previousBoard);
     renderWorld();
     renderInspector();
+    if (!$('#find-panel').hidden) renderFind();
   }
 
   function makeField(label, value, onChange, options = {}) {
@@ -297,6 +405,11 @@
     if (control.type === 'checkbox') control.checked = value;
     else control.value = value;
     if (options.maxLength) control.maxLength = options.maxLength;
+    if (options.disabled) control.disabled = true;
+    if (options.min !== undefined) control.min = options.min;
+    if (options.max !== undefined) control.max = options.max;
+    if (options.placeholder) control.placeholder = options.placeholder;
+    control.dataset.field = label;
     control.addEventListener('change', () => onChange(control.type === 'checkbox' ? control.checked : control.value));
     group.append(control);
     return group;
@@ -315,6 +428,7 @@
     if ($('#inspector').hidden || !state.workspace) return;
     const selected = currentScene.objects.find(item => state.ids.has(item.id));
     const edge = [...board().links, ...board().branches].find(record => record.id === state.edge);
+    const focus = props.contains(document.activeElement) ? document.activeElement.dataset.field : null;
     const description = document.createElement('p');
     props.replaceChildren(description);
     if (edge) {
@@ -333,17 +447,71 @@
         makeField('Start port', edge.from.port, value => update('port', value, 'from'), { values: ports }),
         makeField('End port', edge.to.port, value => update('port', value, 'to'), { values: ports }));
       props.append(button(edge.parentId ? 'Detach branch' : 'Delete connector', deleteSelection));
+      restoreInspectorFocus(props, focus);
       return;
     }
-    if (!selected || state.ids.size !== 1) {
-      description.textContent = state.ids.size ? state.ids.size + ' objects selected' : 'Select an object or connector.';
+    if (!selected) {
+      description.textContent = 'Select an object or connector.';
       return;
     }
-    description.textContent = selected.type === 'branch' ? 'Mind map node' : selected.type[0].toUpperCase() + selected.type.slice(1);
+    if (state.ids.size > 1) {
+      description.textContent = state.ids.size + ' objects selected';
+      props.append(arrangementFields(true));
+      restoreInspectorFocus(props, focus);
+      return;
+    }
+    const typeNames = { branch: 'Mind map node', group: 'Frame', shape: 'Shape', text: 'Text', note: 'Note', stroke: 'Stroke' };
+    description.textContent = typeNames[selected.type];
     const update = (key, value) => change(active => { active.objects.find(item => item.id === selected.id)[key] = value; });
+    const setStyle = (key, value) => change(active => {
+      active.objects.find(item => item.id === selected.id).style[key] = value;
+    });
+    if (selected.type === 'shape') props.append(makeField('Shape', selected.shape, value => change(active => {
+      const item = active.objects.find(object => object.id === selected.id);
+      const template = model.createObject('shape', [item.x, item.y], { shape: value });
+      if (value === 'line' || item.shape === 'line') {
+        item.width = template.width;
+        item.height = template.height;
+      }
+      item.shape = template.shape;
+      item.lineDirection = template.lineDirection;
+    }), { values: model.SHAPES, disabled: selected.locked }));
+    if (selected.shape === 'line') props.append(makeField('Slope', selected.lineDirection || 'down',
+      value => update('lineDirection', value), { values: ['down', 'up'], disabled: selected.locked }));
+    const geometryFields = { type: 'number', min: 1, max: 1000000, disabled: selected.locked };
+    for (const dimension of ['width', 'height']) {
+      props.append(makeField(dimension === 'width' ? 'Width' : 'Height', Math.round(selected[dimension]), value => {
+        if (!value) return;
+        const difference = Number(value) - selected[dimension];
+        change(active => {
+          const index = active.objects.findIndex(object => object.id === selected.id);
+          active.objects[index] = resizeObject(active.objects[index], { rect: selected, corner: 'se',
+            dx: dimension === 'width' ? difference : 0, dy: dimension === 'height' ? difference : 0 });
+        });
+      }, geometryFields));
+    }
     props.append(makeField('Locked', selected.locked, value => update('locked', value), { type: 'checkbox' }),
       makeField('Notes', selected.notes, value => update('notes', value), { multiline: true, maxLength: 20000 }),
       makeField('Source', selected.source, value => update('source', value), { maxLength: 2000 }));
+    if (workflows.sourceURL(selected.source)) props.append(button('Open source', () => {
+      void perform('openSource');
+    }));
+    const stylePanel = document.createElement('fieldset');
+    const legend = document.createElement('legend');
+    legend.textContent = 'Style';
+    stylePanel.append(legend);
+    const colorField = (label, key) => makeField(label, selected.style[key], value => setStyle(key, value.trim()),
+      { maxLength: 11, placeholder: 'Default or #hex' });
+    if (selected.type !== 'stroke' && selected.shape !== 'line') stylePanel.append(colorField('Fill', 'fill'));
+    stylePanel.append(colorField('Stroke', 'stroke'));
+    if (selected.type !== 'stroke' && selected.shape !== 'line') {
+      stylePanel.append(colorField('Text colour', 'textColor'),
+        makeField('Text size', selected.style.fontSize || 13, value => { if (value) setStyle('fontSize', Number(value)); },
+          { type: 'number', min: 8, max: 96 }),
+        makeField('Bold', selected.style.fontWeight === 'bold', value => setStyle('fontWeight', value ? 'bold' : 'normal'), { type: 'checkbox' }),
+        makeField('Italic', Boolean(selected.style.italic), value => setStyle('italic', value), { type: 'checkbox' }));
+    }
+    props.append(stylePanel);
     const candidates = currentScene.objects.filter(item => item.id !== selected.id && item.type !== 'group');
     if (candidates.length && selected.type !== 'group') {
       const target = document.createElement('select');
@@ -356,10 +524,48 @@
     if (selected.type === 'branch') props.append(
       button(selected.folded ? 'Unfold branch' : 'Fold branch', () => update('folded', !selected.folded)),
       button('Arrange branch', arrange),
-      button('Duplicate branch', duplicate),
       button('Detach branch', () => change(active => model.detachBranch(active, selected.id))));
+    props.append(arrangementFields(false, selected.type === 'group'));
+    restoreInspectorFocus(props, focus);
   }
 
+  function restoreInspectorFocus(props, name) {
+    if (name) [...props.querySelectorAll('[data-field]')].find(field => field.dataset.field === name)?.focus();
+  }
+
+  function arrangementFields(multiple, frame = false) {
+    const group = document.createElement('fieldset');
+    const title = document.createElement('legend');
+    title.textContent = 'Arrange';
+    group.append(title);
+    if (multiple) {
+      const alignment = document.createElement('select');
+      alignment.setAttribute('aria-label', 'Align and distribute');
+      alignment.add(new Option('Align and distribute…', ''));
+      for (const [label, action] of [
+        ['Align left', 'left'], ['Align horizontal centres', 'center'], ['Align right', 'right'],
+        ['Align top', 'top'], ['Align vertical centres', 'middle'], ['Align bottom', 'bottom'],
+        ['Distribute horizontally', 'distribute-x'], ['Distribute vertically', 'distribute-y'],
+      ]) {
+        const option = new Option(label, action);
+        option.disabled = action.startsWith('distribute-') && state.ids.size < 3;
+        alignment.add(option);
+      }
+      alignment.addEventListener('change', () => {
+        if (alignment.value) change(active => layout.align(active, state.ids, alignment.value, currentScene.byId));
+        alignment.value = '';
+      });
+      group.append(alignment);
+    }
+    if (multiple) group.append(button('Group in frame', () => void perform('group')));
+    if (frame || (multiple && [...state.ids].some(id => currentScene.byId.get(id)?.type === 'group'))) {
+      group.append(button('Ungroup frame', () => void perform('ungroup')));
+    }
+    group.append(button('Bring to front', () => void perform('front')),
+      button('Send to back', () => void perform('back')),
+      button('Duplicate selection', () => void perform('duplicate')));
+    return group;
+  }
   function setTool(tool) {
     state.tool = tool;
     state.connect = null;
@@ -377,15 +583,16 @@
 
   function beginEdit(id) {
     if (state.edit?.id === id) return;
-    finishEdit();
+    if (!finishEdit()) return;
     const object = currentScene.byId.get(id);
-    if (!object || object.type === 'stroke' || object.locked) return;
+    if (!object || object.type === 'stroke' || object.shape === 'line' || object.locked) return;
     state.edit = { id, text: object.text };
     editor.value = object.text;
     editor.hidden = false;
     setBounds(editor, object);
     editor.style.height = Math.max(object.height, 55) + 'px';
     objectID(id).hidden = true;
+    renderHandles();
     editor.focus();
     editor.setSelectionRange(editor.value.length, editor.value.length);
   }
@@ -398,7 +605,10 @@
     editor.hidden = true;
     const node = objectID(editing.id);
     if (node) node.hidden = false;
-    if (cancel || value === editing.text) return true;
+    if (cancel || value === editing.text) {
+      renderHandles();
+      return true;
+    }
     const changed = change(active => {
       const object = active.objects.find(item => item.id === editing.id);
       object.text = value;
@@ -413,16 +623,16 @@
   }
 
   function freshObject(type, point, text = '') {
-    return { id: model.uid(), type, x: point[0], y: point[1], width: type === 'text' ? 200 : 150,
-      height: 46, text, style: {}, groupId: null, locked: false, folded: false };
+    return model.createObject(type, point, { text, ...(type === 'shape' ? { shape: state.shape } : {}) });
   }
 
   function addObject(type, point) {
     if (!finishEdit()) return;
-    const object = freshObject(type, point);
+    const object = freshObject(type, point, type === 'group' ? 'Frame' : '');
     if (change(active => active.objects.push(object), () => choose([object.id]))) {
       setTool('select');
-      beginEdit(object.id);
+      if (object.shape === 'line') objectID(object.id)?.focus();
+      else beginEdit(object.id);
     }
   }
 
@@ -461,8 +671,7 @@
     if (!finishEdit()) return;
     change(active => {
       if (!state.edge) {
-        const unlocked = [...state.ids].filter(id => !active.objects.find(object => object.id === id)?.locked);
-        model.deleteObjects(active, unlocked);
+        removeObjects(active, state.ids);
       } else {
         const branch = active.branches.find(edge => edge.id === state.edge);
         if (branch) model.detachBranch(active, branch.childId);
@@ -471,16 +680,161 @@
     }, () => choose());
   }
 
+  function removeObjects(active, ids) {
+    const removal = new Set([...ids].flatMap(id => [id, ...model.descendants(active, id)]));
+    if (active.objects.some(object => removal.has(object.id) && object.locked)) {
+      throw new Error('Unlock the selected objects or branches before deleting them.');
+    }
+    model.deleteObjects(active, ids);
+  }
+
   function arrange() {
     const id = [...state.ids][0];
     if (id) change(active => model.relayoutBranch(active, id));
   }
 
   function duplicate() {
-    const id = [...state.ids][0];
-    if (!id) return;
-    let newId;
-    change(active => { newId = model.duplicateBranch(active, id); }, () => choose(newId ? [newId] : []));
+    if (!state.ids.size) return false;
+    return insertSelection(layout.capture(board(), state.ids));
+  }
+
+  function insertSelection(selection, point) {
+    let ids;
+    return change(active => { ids = layout.insert(active, selection, point); }, () => choose(ids));
+  }
+
+  function groupSelection(ungroup = false) {
+    let ids;
+    return change(active => {
+      ids = ungroup ? layout.ungroup(active, state.ids) : [layout.group(active, state.ids, currentScene.byId)];
+    }, () => choose(ids));
+  }
+
+  function clipboardPayload() {
+    if (!state.ids.size) return null;
+    const payload = layout.capture(board(), state.ids);
+    return {
+      selection: JSON.stringify(payload),
+      text: payload.objects.map(object => object.text).filter(Boolean).join('\n') || 'Mind Mapper objects',
+    };
+  }
+
+  function writeClipboard(payload) {
+    if (bridge) return send('writeClipboard', payload);
+    if (!navigator.clipboard) throw new Error('Clipboard access is unavailable in this browser.');
+    if (!payload.html && !payload.selection) return navigator.clipboard.writeText(payload.text);
+    const types = { 'text/plain': new Blob([payload.text], { type: 'text/plain' }) };
+    if (payload.html) types['text/html'] = new Blob([payload.html], { type: 'text/html' });
+    if (payload.selection) {
+      const custom = { ...types, ['web ' + selectionType]: new Blob([payload.selection], { type: selectionType }) };
+      return navigator.clipboard.write([new ClipboardItem(custom)]);
+    }
+    return navigator.clipboard.write([new ClipboardItem(types)]);
+  }
+
+  async function readClipboard() {
+    if (bridge) return send('readClipboard');
+    if (!navigator.clipboard) throw new Error('Clipboard access is unavailable in this browser.');
+    if (navigator.clipboard.read) {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = 'web ' + selectionType;
+        if (item.types.includes(type)) return { selection: await (await item.getType(type)).text() };
+        if (item.types.includes('text/plain')) return { text: await (await item.getType('text/plain')).text() };
+      }
+      return {};
+    }
+    return { text: await navigator.clipboard.readText() };
+  }
+
+  const canvasPoint = () => ({ x: -board().view.x / board().view.zoom - 60, y: -board().view.y / board().view.zoom - 25 });
+
+  function pastePayload(payload) {
+    if (!payload) return false;
+    const point = canvasPoint();
+    if (payload.selection) {
+      if (payload.selection.length > model.MAX_BYTES) throw new Error('The clipboard selection is too large.');
+      return insertSelection(JSON.parse(payload.selection), point);
+    }
+    if (!payload.text) return false;
+    const object = freshObject('text', [point.x, point.y], payload.text);
+    return change(active => active.objects.push(object), () => choose([object.id]));
+  }
+
+  async function copySelection(cut = false) {
+    const payload = clipboardPayload();
+    if (!payload) return false;
+    const ids = new Set(state.ids);
+    const id = board().id;
+    const revision = state.revision;
+    const contents = cut ? JSON.parse(payload.selection).objects : [];
+    if (contents.some(object => object.locked)) throw new Error('Unlock the selection before cutting it.');
+    if (await writeClipboard(payload) === false) return false;
+    if (!cut) return true;
+    if (board().id !== id || state.revision !== revision) {
+      notice('Selection copied. The board changed before it could be cut.');
+      return true;
+    }
+    return change(active => removeObjects(active, contents.map(object => object.id)), () => {
+      if ([...ids].every(key => state.ids.has(key))) choose();
+    });
+  }
+
+  function copyOutline(rich) {
+    const output = workflows.outline(board(), state.ids);
+    if (!output.text) throw new Error('Select a mind map branch or open a board with a mind map.');
+    return writeClipboard(rich ? output : { text: output.text });
+  }
+
+  function renderFind() {
+    const results = $('#find-results');
+    state.findMatches = workflows.searchBoard(board(), $('#board-find').value);
+    if (!state.findMatches.length) {
+      const msg = document.createElement('p');
+      msg.textContent = $('#board-find').value.trim() ? 'No matches' : 'Find text, notes, sources or connector labels.';
+      results.replaceChildren(msg);
+      return;
+    }
+    results.replaceChildren(...state.findMatches.slice(0, 100).map(match => {
+      const detail = match.field === 'text' || match.field === 'label' ? '' : ' · ' + match.field;
+      const control = button(match.title + detail, () => showMatch(match));
+      control.title = match.excerpt;
+      return control;
+    }));
+  }
+
+  function showMatch(match) {
+    if (!change(active => workflows.revealMatch(active, match))) return;
+    if (match.kind === 'edge') choose([], match.id);
+    else choose([match.id]);
+    updateSelection();
+    const area = selectionArea();
+    if (area) {
+      const { zoom } = board().view;
+      withView({ zoom, x: -(area.x + area.width / 2) * zoom, y: -(area.y + area.height / 2) * zoom });
+    }
+    closeFind(false);
+    if (match.kind === 'edge') {
+      shown('#inspector', true);
+      setPressed($('button[data-command="inspector"]'), true);
+      viewTransform();
+      renderInspector();
+      $('#properties input')?.focus();
+    } else objectID(match.id)?.focus({ preventScroll: true });
+  }
+
+  function closeFind(restore = true) {
+    shown('#find-panel', false);
+    const trigger = $('button[data-command="find"]');
+    trigger.setAttribute('aria-expanded', 'false');
+    if (restore) trigger.focus();
+  }
+
+  function openFind() {
+    shown('#find-panel', true);
+    $('button[data-command="find"]').setAttribute('aria-expanded', 'true');
+    renderFind();
+    $('#board-find').select();
   }
 
   async function download(name, data, mime) {
@@ -520,7 +874,8 @@
   }
 
   function switchBoard(id) {
-    if (!finishEdit() || board().id === id) return;
+    if (!finishEdit() || board().id === id || !state.workspace.boards.some(item => item.id === id)) return;
+    state.previousBoard = board().id;
     state.workspace = { ...state.workspace, activeBoardId: id };
     choose();
     setTool('select');
@@ -529,7 +884,21 @@
   }
 
   function addBoard(next) {
-    return change((active, workspace) => model.addImportedBoards(workspace, [next]), () => choose());
+    const old = board().id;
+    return change((active, workspace) => model.addImportedBoards(workspace, [next]), () => {
+      state.previousBoard = old;
+      $('#library-search').value = '';
+      choose();
+    });
+  }
+
+  function duplicateBoard() {
+    const id = board().id;
+    return change((active, workspace) => workflows.duplicateBoard(workspace, id), () => {
+      state.previousBoard = id;
+      $('#library-search').value = '';
+      choose();
+    });
   }
 
   function togglePanel(selector, name) {
@@ -540,9 +909,25 @@
     if (name === 'inspector') renderInspector();
   }
 
+  function toggleViewOption(name) {
+    state[name] = !state[name];
+    const control = $('button[data-command="' + name + '"]');
+    setPressed(control, state[name]);
+    if (name === 'grid') viewport.dataset.grid = String(state.grid);
+  }
+
   const commands = {
     new: () => addBoard(model.emptyBoard()),
     example: () => addBoard(model.exampleBoard()),
+    renameBoard: () => $('#board-title').select(),
+    duplicateBoard,
+    previousBoard: () => switchBoard(state.previousBoard),
+    removeBoard() {
+      const dialog = $('#delete-dialog');
+      dialog.returnValue = 'cancel';
+      $('#delete-title').textContent = 'Delete “' + board().title + '”? You can undo in this session.';
+      dialog.showModal();
+    },
     save: flush,
     open: addImport,
     undo: () => undo(),
@@ -551,7 +936,39 @@
     exportBoard: () => download(fileName() + '.mindmap', JSON.stringify(board(), null, 2), 'application/json'),
     boards: () => togglePanel('#library', 'boards'),
     inspector: () => togglePanel('#inspector', 'inspector'),
-    fit,
+    fit: () => fit(),
+    fitSelection: () => { const area = selectionArea(); if (area) fit(area); },
+    centre: () => withView({ ...board().view, x: 0, y: 0 }),
+    find: openFind,
+    closeFind,
+    selectAll() { choose(currentScene.objects.map(object => object.id)); updateSelection(); },
+    duplicate,
+    group: () => groupSelection(),
+    ungroup: () => groupSelection(true),
+    front: () => change(active => layout.order(active, state.ids, 'front')),
+    back: () => change(active => layout.order(active, state.ids, 'back')),
+    cut: () => copySelection(true),
+    copy: () => copySelection(),
+    paste: async () => pastePayload(await readClipboard()),
+    copyMarkdown: () => copyOutline(false),
+    copyRich: () => copyOutline(true),
+    outline() {
+      const dialog = $('#outline-dialog');
+      dialog.returnValue = 'cancel';
+      $('#outline-text').value = '';
+      dialog.showModal();
+      $('#outline-text').focus();
+    },
+    openSource() {
+      const id = [...state.ids][0];
+      const href = workflows.sourceURL(board().objects.find(item => item.id === id)?.source);
+      if (!href) return false;
+      if (bridge) return send('openSource', { url: href });
+      window.open(href, '_blank', 'noopener,noreferrer');
+    },
+    grid: () => toggleViewOption('grid'),
+    snapGrid: () => toggleViewOption('snapGrid'),
+    snapObjects: () => toggleViewOption('snapObjects'),
     zoomIn: () => zoomAt(1.2),
     zoomOut: () => zoomAt(1 / 1.2),
     dismiss: () => notice(''),
@@ -584,6 +1001,15 @@
       startGesture(event, 'pan');
       return;
     }
+    const corner = event.target.closest('[data-corner]')?.dataset.corner;
+    if (corner && state.tool === 'select' && state.ids.size === 1) {
+      const id = [...state.ids][0];
+      const rect = currentScene.byId.get(id);
+      if (!rect || rect.locked) return;
+      event.preventDefault();
+      startGesture(event, 'resize', { corner, object: { id }, rect });
+      return;
+    }
     const edge = event.target.closest('[data-edge]')?.dataset.edge;
     const object = event.target.closest('[data-object]')?.dataset.object;
     if (state.tool === 'draw') {
@@ -596,12 +1022,17 @@
         choose([object]);
         updateSelection();
       }
-    } else if (['text', 'shape', 'branch'].includes(state.tool)) {
+    } else if (['text', 'note', 'shape', 'branch', 'group'].includes(state.tool)) {
       event.preventDefault();
       addObject(state.tool, xy(event));
     } else if (state.tool === 'select') {
       if (edge) choose([], edge);
-      else if (!object) choose();
+      else if (!object) {
+        const preserve = event.shiftKey ? new Set(state.ids) : new Set();
+        choose(preserve);
+        viewport.focus({ preventScroll: true });
+        startGesture(event, 'marquee', { origin: xy(event), preserve, boxes: currentScene.byId });
+      }
       else if (event.shiftKey) {
         if (state.ids.has(object)) state.ids.delete(object);
         else state.ids.add(object);
@@ -609,7 +1040,11 @@
       } else if (!state.ids.has(object)) choose([object]);
       updateSelection();
       if (object && state.ids.has(object) && !currentScene.byId.get(object).locked) {
-        startGesture(event, 'move', { ids: new Set(state.ids) });
+        startGesture(event, 'move', { ids: new Set(state.ids), boxes: currentScene.byId,
+          collapseTo: !event.shiftKey && state.ids.size > 1 ? object : null });
+      } else if (object && !event.shiftKey && state.ids.size > 1) {
+        choose([object]);
+        updateSelection();
       }
     }
   });
@@ -622,15 +1057,37 @@
       const previous = drag.points.at(-1);
       if (drag.points.length < 25000 && Math.hypot(next[0] - previous[0], next[1] - previous[1]) >= 1) drag.points.push(next);
       renderDiagram();
+    } else if (drag.kind === 'marquee') {
+      const point = xy(event);
+      const [x, y] = drag.origin;
+      drag.area = { x, y, width: point[0] - x, height: point[1] - y };
+      const marker = $('#marquee');
+      marker.hidden = false;
+      marker.style.left = Math.min(x, point[0]) + 'px';
+      marker.style.top = Math.min(y, point[1]) + 'px';
+      marker.style.width = Math.abs(drag.area.width) + 'px';
+      marker.style.height = Math.abs(drag.area.height) + 'px';
+      choose([...drag.preserve, ...layout.marquee(drag.boxes, drag.area)]);
+      for (const element of objectLayer.children) setPressed(element, state.ids.has(element.dataset.object));
     } else {
-      const scale = drag.kind === 'move' ? board().view.zoom : 1;
+      const scale = drag.kind === 'pan' ? 1 : board().view.zoom;
       const dx = (event.clientX - drag.start[0]) / scale;
       const dy = (event.clientY - drag.start[1]) / scale;
-      if (drag.kind === 'move' && !drag.dx && !drag.dy && Math.hypot(dx, dy) < 2) return;
+      if (drag.kind === 'move' && !drag.moving && Math.hypot(dx, dy) < 2) return;
       if (drag.kind === 'move' && !viewport.hasPointerCapture(event.pointerId)) viewport.setPointerCapture(event.pointerId);
       drag.dx = dx;
       drag.dy = dy;
-      if (drag.kind === 'move') renderWorld();
+      if (drag.kind === 'move') {
+        drag.moving = true;
+        drag.guides = layout.snap(board(), drag.ids, dx, dy, { grid: state.snapGrid && !event.altKey, objects: state.snapObjects && !event.altKey,
+          threshold: 6 / board().view.zoom, gridSize, boxes: drag.boxes });
+        drag.dx = drag.guides.dx;
+        drag.dy = drag.guides.dy;
+        renderWorld();
+      } else if (drag.kind === 'resize') {
+        drag.keepRatio = event.shiftKey;
+        renderWorld();
+      }
       else viewTransform();
     }
   });
@@ -641,9 +1098,27 @@
     state.gesture = null;
     viewport.dataset.panning = 'false';
     if (viewport.hasPointerCapture(drag.id)) viewport.releasePointerCapture(drag.id);
-    if (drag.kind === 'move' && !drag.dx && !drag.dy) return;
+    if (drag.kind === 'marquee') {
+      shown('#marquee', false);
+      if (!commit) choose(drag.preserve);
+      updateSelection();
+      return;
+    }
+    if (drag.kind === 'move' && !drag.moving) {
+      if (commit && drag.collapseTo) {
+        choose([drag.collapseTo]);
+        updateSelection();
+      }
+      return;
+    }
+    renderGuides();
     if (commit && drag.kind === 'move' && (drag.dx || drag.dy)) {
-      if (change(active => model.moveObjects(active, drag.ids, drag.dx, drag.dy))) return;
+      if (change(active => layout.move(active, drag.ids, drag.dx, drag.dy))) return;
+    } else if (commit && drag.kind === 'resize' && (drag.dx || drag.dy)) {
+      if (change(active => {
+        const index = active.objects.findIndex(object => object.id === drag.object.id);
+        active.objects[index] = resizeObject(active.objects[index], drag);
+      })) return;
     } else if (commit && drag.kind === 'pan' && (drag.dx || drag.dy)) {
       const view = board().view;
       withView({ ...view, x: view.x + drag.dx, y: view.y + drag.dy });
@@ -669,13 +1144,14 @@
   viewport.addEventListener('wheel', event => {
     if (!state.workspace || event.target === editor) return;
     event.preventDefault();
+    const units = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
     if (event.ctrlKey || event.metaKey) {
       const rect = viewport.getBoundingClientRect();
-      zoomAt(Math.exp(-event.deltaY * .004), [event.clientX - rect.left - rect.width / 2, event.clientY - rect.top - rect.height / 2]);
+      zoomAt(Math.exp(-event.deltaY * units * .004), [event.clientX - rect.left - rect.width / 2, event.clientY - rect.top - rect.height / 2]);
       return;
     }
     const view = board().view;
-    withView({ ...view, x: view.x - event.deltaX, y: view.y - event.deltaY });
+    withView({ ...view, x: view.x - event.deltaX * units, y: view.y - event.deltaY * units });
   }, { passive: false });
 
   editor.addEventListener('blur', () => finishEdit());
@@ -711,21 +1187,30 @@
 
   document.addEventListener('keydown', event => {
     if (!state.workspace || event.isComposing) return;
-    const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName);
+    const typing = isTyping(event.target);
     const command = event.metaKey || event.ctrlKey;
-    if (command && event.key.toLowerCase() === 's') {
+    const key = event.key.toLowerCase();
+    if (command && key === 's') {
       event.preventDefault();
       void perform('save');
-    } else if (command && event.key.toLowerCase() === 'z' && !typing) {
+    } else if (command && key === 'z' && !typing) {
       event.preventDefault();
       undo(event.shiftKey);
+    } else if (command && key === 'f') {
+      event.preventDefault();
+      void perform('find');
+    } else if (command && !typing && ['a', 'd', 'g'].includes(key)) {
+      event.preventDefault();
+      void perform({ a: 'selectAll', d: 'duplicate', g: event.shiftKey ? 'ungroup' : 'group' }[key]);
+    } else if (event.key === 'Escape' && !$('#find-panel').hidden) {
+      closeFind();
     } else if (event.key === 'Escape' && (state.gesture || state.tool !== 'select')) {
       finishGesture(false);
       setTool('select');
     } else if (!typing && viewport.contains(event.target)) {
-      if (event.code === 'Space' && event.target === viewport) {
+      if (event.code === 'Space') {
         state.space = true;
-        event.preventDefault();
+        if (event.target === viewport) event.preventDefault();
       } else if (event.key === 'F2' && state.ids.size === 1) {
         event.preventDefault();
         beginEdit([...state.ids][0]);
@@ -737,7 +1222,17 @@
         const movement = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
         if (movement[event.key]) {
           event.preventDefault();
-          change(active => model.moveObjects(active, state.ids, ...movement[event.key]));
+          const corner = event.target.dataset.corner;
+          if (corner && state.ids.size === 1) {
+            const id = [...state.ids][0], rect = currentScene.byId.get(id);
+            const [dx, dy] = movement[event.key];
+            change(active => {
+              const index = active.objects.findIndex(object => object.id === id);
+              if (index >= 0 && !active.objects[index].locked) {
+                active.objects[index] = resizeObject(active.objects[index], { rect, corner, dx, dy });
+              }
+            });
+          } else change(active => layout.move(active, state.ids, ...movement[event.key]));
         }
       }
     }
@@ -749,11 +1244,20 @@
     const control = event.target.closest('button');
     if (!state.workspace || !control) return;
     if (control.dataset.command) {
-      const menu = $('#export-menu');
-      if (menu.contains(control)) menu.hidePopover();
+      control.closest('[popover]')?.hidePopover();
       void perform(control.dataset.command);
     } else if (control.dataset.board) switchBoard(control.dataset.board);
     else if (control.dataset.start) addObject(control.dataset.start, [-85, -28]);
+    else if (control.dataset.starter && finishEdit()) {
+      control.closest('[popover]')?.hidePopover();
+      addBoard(model.starterBoard(control.dataset.starter));
+      fit();
+    } else if (control.dataset.shape && finishEdit()) {
+      control.closest('[popover]')?.hidePopover();
+      state.shape = control.dataset.shape;
+      $('button[data-tool="shape"]').title = 'Place ' + control.textContent.toLowerCase();
+      setTool('shape');
+    }
     else if (control.dataset.tool && finishEdit()) setTool(control.dataset.tool);
     else if (event.detail === 0 && control.dataset.object) {
       if (state.tool === 'link' && state.connect) addLink(state.connect, control.dataset.object);
@@ -763,6 +1267,67 @@
         updateSelection();
       }
     }
+  });
+
+  function browserCopy(event, cut = false) {
+    if (bridge || isTyping(event.target) || !state.workspace || !state.ids.size || !event.clipboardData) return;
+    try {
+      const payload = clipboardPayload();
+      const contents = cut ? JSON.parse(payload.selection).objects : [];
+      if (contents.some(object => object.locked)) throw new Error('Unlock the selection before cutting it.');
+      event.clipboardData.setData(selectionType, payload.selection);
+      event.clipboardData.setData('text/plain', payload.text);
+      event.preventDefault();
+      if (cut) change(active => removeObjects(active, contents.map(object => object.id)), () => choose());
+    } catch (error) {
+      event.preventDefault();
+      notice(error.message || String(error));
+    }
+  }
+
+  document.addEventListener('copy', event => browserCopy(event));
+  document.addEventListener('cut', event => browserCopy(event, true));
+  document.addEventListener('paste', event => {
+    if (bridge || isTyping(event.target) || !state.workspace || !event.clipboardData) return;
+    const selection = event.clipboardData.getData(selectionType);
+    const text = event.clipboardData.getData('text/plain');
+    if (!selection && !text) return;
+    event.preventDefault();
+    try { pastePayload({ selection, text }); } catch (error) { notice(error.message || String(error)); }
+  });
+
+  for (const menu of document.querySelectorAll('.popup[popover]')) {
+    menu.addEventListener('beforetoggle', event => {
+      if (event.newState !== 'open') return;
+      const trigger = $('[popovertarget="' + menu.id + '"]');
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      menu.style.top = Math.min(rect.bottom + 4, Math.max(8, innerHeight - 180)) + 'px';
+      menu.style.left = Math.min(rect.left, Math.max(8, innerWidth - 185)) + 'px';
+    });
+  }
+
+  $('#library-search').addEventListener('input', () => { if (state.workspace) render(); });
+  $('#board-find').addEventListener('input', renderFind);
+  $('#board-find').addEventListener('keydown', event => {
+    if (event.key === 'Enter' && state.findMatches.length) {
+      event.preventDefault();
+      showMatch(state.findMatches[0]);
+    }
+    if (event.key === 'ArrowDown') $('#find-results button')?.focus();
+  });
+  $('#delete-dialog').addEventListener('close', event => {
+    if (event.target.returnValue !== 'delete') return;
+    const id = board().id;
+    change((active, workspace) => workflows.removeBoard(workspace, id), () => choose());
+  });
+  $('#outline-dialog').addEventListener('close', event => {
+    if (event.target.returnValue !== 'paste') return;
+    const anchor = state.ids.size === 1 ? [...state.ids][0] : null;
+    const { x, y } = canvasPoint();
+    let roots;
+    change(active => { roots = workflows.pasteOutline(active, $('#outline-text').value, anchor, [x, y]); },
+      () => choose(roots));
   });
   $('#board-title').addEventListener('change', event => {
     change(active => { active.title = event.target.value.trim() || 'Untitled board'; });
@@ -781,7 +1346,7 @@
   });
   $('#import-file').addEventListener('cancel', () => { filePicker?.(null); filePicker = null; });
   new ResizeObserver(viewTransform).observe(viewport);
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (state.workspace) renderDiagram(); });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (state.workspace) renderWorld(); });
 
   async function initialize() {
     try {

@@ -9,22 +9,30 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
 
     static let mapType = UTType(exportedAs: "au.pcarroll.mindmapper.prototype.board", conformingTo: .json)
     private static let maximumExportBytes = 30 * 1024 * 1024
+    private static let selectionType = NSPasteboard.PasteboardType("au.pcarroll.mindmapper.selection")
+    private static let textActions: [String: Selector] = [
+        "cut": #selector(NSText.cut(_:)), "copy": #selector(NSText.copy(_:)),
+        "paste": #selector(NSText.paste(_:)), "selectAll": #selector(NSText.selectAll(_:)),
+    ]
 
     let webView: WKWebView
     private let store: DocumentStore
     private let editorURL: URL
     private let resourceRoot: URL
     private let chooseFile: ChooseFile
+    private let pasteboard: NSPasteboard
     private var pickerOpen = false
     private(set) var hasLoadedLibrary = false
     var didFail: ((String) -> Void)?
 
     init(resourceRoot: URL, store: DocumentStore, ephemeral: Bool = false,
+         pasteboard: NSPasteboard = .general,
          chooseFile: @escaping ChooseFile = { panel, window, selection in
              panel.beginSheetModal(for: window) { result in selection(result == .OK ? panel.url : nil) }
          }) {
         self.store = store
         self.chooseFile = chooseFile
+        self.pasteboard = pasteboard
         self.resourceRoot = resourceRoot.resolvingSymlinksInPath().standardizedFileURL
         editorURL = self.resourceRoot.appendingPathComponent("prototype/index.html")
         let config = WKWebViewConfiguration()
@@ -46,12 +54,14 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
     }
 
     func perform(_ action: String) async throws -> Any? {
-        try await webView.callAsyncJavaScript(
+        let result = try await webView.callAsyncJavaScript(
             """
             if (!window.MindMapperPrototype) throw new Error('The editor is still opening.');
-            if ((action === 'undo' || action === 'redo') &&
-                document.activeElement?.matches('textarea, input:not([type]), input[type="text"], [contenteditable="true"]')) {
-                return document.execCommand(action);
+            const field = document.activeElement;
+            if (field?.matches('textarea, input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="password"], input[type="tel"], input[type="number"]') ||
+                field?.isContentEditable) {
+                if (action === 'undo' || action === 'redo') return document.execCommand(action);
+                if (['cut', 'copy', 'paste', 'selectAll'].includes(action)) return { standardTextAction: action };
             }
             return await window.MindMapperPrototype.perform(action);
             """,
@@ -59,6 +69,11 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
             in: nil,
             contentWorld: .page
         )
+        if let textAction = (result as? [String: String])?["standardTextAction"],
+           let selector = Self.textActions[textAction] {
+            return NSApp.sendAction(selector, to: nil, from: webView)
+        }
+        return result
     }
 
     private func isEditorURL(_ url: URL?) -> Bool {
@@ -111,11 +126,83 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
                 try openFile(replyHandler)
             case "export":
                 try exportFile(body, replyHandler)
+            case "readClipboard":
+                replyHandler(Self.readClipboard(from: pasteboard), nil)
+            case "writeClipboard":
+                try Self.writeClipboard(body, to: pasteboard)
+                replyHandler(true, nil)
+            case "openSource":
+                guard let value = body["url"] as? String,
+                      let url = Self.sourceURL(value) else {
+                    throw StoreError.message("Enter a complete HTTP or HTTPS source link.")
+                }
+                guard NSWorkspace.shared.open(url) else {
+                    throw StoreError.message("Couldn’t open this source link.")
+                }
+                replyHandler(true, nil)
             default:
                 throw StoreError.message("Unknown Mac file action.")
             }
         } catch {
             replyHandler(nil, error.localizedDescription)
+        }
+    }
+
+    private static func sourceURL(_ text: String) -> URL? {
+        guard text.utf8.count <= 2000,
+              let components = URLComponents(string: text),
+              let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = components.host, !host.isEmpty else { return nil }
+        return components.url
+    }
+
+    private static func validSelection(_ text: String) -> Bool {
+        guard text.utf8.count <= DocumentStore.maximumBytes,
+              let value = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return false }
+        // The editor validates the individual records and remaps their IDs when pasting.
+        return value["format"] as? String == "mindmapper.selection"
+            && value["version"] as? Int == 1
+            && value["objects"] is [Any]
+            && value["branches"] is [Any]
+            && value["links"] is [Any]
+    }
+
+    static func readClipboard(from pasteboard: NSPasteboard = .general) -> [String: String] {
+        var contents: [String: String] = [:]
+        for (key, type) in [("text", NSPasteboard.PasteboardType.string), ("html", .html)] {
+            if let value = pasteboard.string(forType: type), value.utf8.count <= DocumentStore.maximumBytes {
+                contents[key] = value
+            }
+        }
+        if let selection = pasteboard.string(forType: selectionType), validSelection(selection) {
+            contents["selection"] = selection
+        }
+        return contents
+    }
+
+    static func writeClipboard(_ contents: [String: Any], to pasteboard: NSPasteboard = .general) throws {
+        guard let text = contents["text"] as? String, text.utf8.count <= DocumentStore.maximumBytes else {
+            throw StoreError.message("Clipboard text is missing or exceeds 20 MB.")
+        }
+        let item = NSPasteboardItem()
+        guard item.setString(text, forType: .string) else {
+            throw StoreError.message("Couldn’t prepare the clipboard text.")
+        }
+        if let rawHTML = contents["html"] {
+            guard let html = rawHTML as? String, html.utf8.count <= DocumentStore.maximumBytes,
+                  item.setString(html, forType: .html) else {
+                throw StoreError.message("Clipboard HTML is invalid or exceeds 20 MB.")
+            }
+        }
+        if let rawSelection = contents["selection"] {
+            guard let selection = rawSelection as? String, validSelection(selection),
+                  item.setString(selection, forType: selectionType) else {
+                throw StoreError.message("The board selection cannot be copied.")
+            }
+        }
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([item]) else {
+            throw StoreError.message("Couldn’t copy to the Mac clipboard.")
         }
     }
 
