@@ -193,7 +193,37 @@ dialog form { display: grid; gap: 9px; }
 dialog p { margin: 0; overflow-wrap: anywhere; }
 dialog footer { display: flex; justify-content: end; gap: 5px; }
 dialog::backdrop { background: #0006; }
+#export-dialog { width: min(800px, calc(100vw - 26px)); max-height: calc(100vh - 26px); }
+#export-dialog h2 { font-size: 15px; padding-bottom: 3px; }
+.export-layout { display: grid; grid-template-columns: minmax(0, 1fr) 179px; gap: 12px; }
+.export-preview {
+  min-width: 0; min-height: 175px; height: min(52vh, 410px); display: grid; place-items: center;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  padding: 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--panel);
+}
+.export-preview[data-transparent="true"] {
+  background: repeating-conic-gradient(#fcfcfd 0% 25%, #f0f0f3 0% 50%) 0 0 / 16px 16px;
+}
+.export-preview img { width: 100%; height: 100%; object-fit: contain; }
+.export-preview p, #export-size, #export-status { font-size: 12px; color: var(--quiet); }
+#export-size:empty { display: none; }
+#export-status[data-error="true"] { color: var(--error); }
+.export-options { display: grid; align-content: start; gap: 8px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.export-field { display: grid; gap: 3px; min-width: 0; }
+.export-options label { font-size: 12px; }
+.export-options select {
+  background: var(--paper); border: 1px solid var(--line); border-radius: 6px;
+  min-height: 29px; width: 100%; padding: 2px 5px;
+}
+.export-options .export-folds { display: flex; align-items: center; gap: 5px; margin-top: 4px; }
+.export-folds input { margin: 1px; }
 button.danger { color: var(--error); border-color: var(--line); }
+@media (max-width: 525px) {
+  .export-layout { grid-template-columns: minmax(0, 1fr); }
+  .export-preview { height: 32vh; }
+  .export-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 860px) {
   .snaps { bottom: 47px; }
   #notice { bottom: 93px; }

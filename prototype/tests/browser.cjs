@@ -22,6 +22,18 @@ const active = value => value.boards.find(board => board.id === value.activeBoar
 const object = (value, id) => value.objects.find(item => item.id === id);
 const dom = (page, id) => page.locator('[data-object="' + id + '"]');
 
+async function download(page, button, extension) {
+  const pending = page.waitForEvent('download');
+  await button.click();
+  const file = await pending;
+  assert.equal(path.extname(file.suggestedFilename()), extension);
+  return fs.readFile(await file.path());
+}
+
+function exportButton(page, name) {
+  return page.getByRole('button', { name, exact: true });
+}
+
 async function centerOf(locator) {
   const rect = await locator.boundingBox();
   assert.ok(rect, 'Expected a visible canvas object or handle');
@@ -257,6 +269,11 @@ async function main() {
     assert.equal(await page.evaluate(() => window.MindMapperPrototype.ready), true);
     await expect(page.getByRole('heading', { name: 'Blank board' })).toBeVisible();
     await expect(page.locator('.object')).toHaveCount(0);
+    await exportButton(page, 'Export').click();
+    await exportButton(page, 'Figure…').click();
+    await expect(exportButton(page, 'Download')).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(exportButton(page, 'Export')).toBeFocused();
     await page.getByRole('button', { name: 'Example board', exact: true }).click();
     await page.getByRole('button', { name: 'Snap objects', exact: true }).click();
     const example = active(await workspace(page));
@@ -333,10 +350,12 @@ async function main() {
     assert.equal(undrawn.objects.filter(item => item.type === 'stroke').length, 1);
     await page.getByRole('button', { name: 'Redo', exact: true }).click();
 
-    await page.getByRole('button', { name: 'Export', exact: true }).click();
-    const pending = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'SVG figure' }).click();
-    const svg = await fs.readFile(await (await pending).path(), 'utf8');
+    await exportButton(page, 'Export').click();
+    await exportButton(page, 'Figure…').click();
+    await expect(page.getByRole('dialog', { name: 'Export figure' })).toBeVisible();
+    await expect(page.getByAltText('Preview of the exported figure')).toBeVisible();
+    const saveFigure = exportButton(page, 'Download');
+    const svg = (await download(page, saveFigure, '.svg')).toString();
     const parsed = await page.evaluate(content => {
       const xml = new DOMParser().parseFromString(content, 'image/svg+xml');
       return {
@@ -354,6 +373,47 @@ async function main() {
     assert.ok(parsed.bounds[2] > 100 && parsed.bounds[3] > 100);
     assert.equal(parsed.preamp, multiline.replace('\n', ''));
     assert.ok(parsed.texts.includes('Watch & listen'));
+
+    await page.getByLabel('Area', { exact: true }).selectOption('frame');
+    assert.equal(await page.getByLabel('Frame', { exact: true }).locator('option:checked').textContent(), 'Signal path');
+    const cropped = (await download(page, saveFigure, '.svg')).toString();
+    assert.match(cropped, /Signal path/);
+    assert.doesNotMatch(cropped, /Listening notes/);
+    await page.getByLabel('Padding (px)', { exact: true }).selectOption('48');
+    await page.getByLabel('Format', { exact: true }).selectOption('png');
+    await page.getByLabel('Scale', { exact: true }).selectOption('2');
+    const png = await download(page, saveFigure, '.png');
+    assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    const expectedSize = (await page.locator('#export-size').textContent()).replaceAll(',', '');
+    assert.equal(expectedSize, `${png.readUInt32BE(16)} × ${png.readUInt32BE(20)} px`);
+    await page.getByLabel('Format', { exact: true }).selectOption('jpeg');
+    await expect(page.locator('#export-size')).toContainText('white background for JPEG');
+    const jpeg = await download(page, saveFigure, '.jpg');
+    assert.equal(jpeg.subarray(0, 3).toString('hex'), 'ffd8ff');
+    for (const [type, bytes, corner] of [['png', png, [0, 0, 0, 0]], ['jpeg', jpeg, [255, 255, 255, 255]]]) {
+      const pixel = await page.evaluate(async ({ type, bytes }) => {
+        const bitmap = await createImageBitmap(new Blob([Uint8Array.from(bytes)], { type: 'image/' + type }));
+        const context = document.createElement('canvas').getContext('2d');
+        context.drawImage(bitmap, 0, 0, 1, 1, 0, 0, 1, 1);
+        bitmap.close();
+        return [...context.getImageData(0, 0, 1, 1).data];
+      }, { type, bytes: [...bytes] });
+      assert.deepEqual(pixel, corner);
+    }
+    await exportButton(page, 'Close').click();
+    await page.getByRole('button', { name: 'Select', exact: true }).click();
+    await dom(page, 'preamp').click();
+    await exportButton(page, 'Export').click();
+    await exportButton(page, 'Figure…').click();
+    await page.getByLabel('Format', { exact: true }).selectOption('svg');
+    await page.getByLabel('Area', { exact: true }).selectOption('selection');
+    const selected = (await download(page, saveFigure, '.svg')).toString();
+    assert.match(selected, /data-object-id="preamp"/);
+    assert.doesNotMatch(selected, /data-object-id="monitor"/);
+    await exportButton(page, 'Close').click();
+    await exportButton(page, 'Export').click();
+    const library = JSON.parse(await download(page, exportButton(page, 'Editable library'), '.json'));
+    assert.deepEqual(model.validateWorkspace(library), await workspace(page));
 
     // Use a supplied copy of a legacy map when checking the real migration.
     const legacyPath = process.argv[2];
@@ -383,7 +443,7 @@ async function main() {
     assert.equal(await reopened.evaluate(() => window.MindMapperPrototype.ready), true);
     assert.deepEqual(await workspace(reopened), final);
     assert.deepEqual(browserErrors, []);
-    console.log('Browser canvas passed: everyday editing, two-sided branches, port drag and preview, reconnection, pinned and cancelled bends, drawn and split strokes, SVG and save/reopen.'
+    console.log('Browser canvas passed: editing, branches, routing, ink, export preview and focus, SVG scopes, PNG alpha, JPEG, portable library and save/reopen.'
       + (legacyPath ? ' Legacy map copy imported without changes to the original.' : ''));
   } finally {
     if (context) await context.close();

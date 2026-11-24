@@ -8,6 +8,7 @@
   const structure = BoardStructure;
   const ink = BoardInk;
   const wires = BoardWireControls;
+  const exportDialog = BoardExportDialog;
   const $ = selector => document.querySelector(selector);
   const viewport = $('#viewport');
   const world = $('#world');
@@ -987,20 +988,8 @@
     $('#board-find').select();
   }
 
-  async function download(name, data, mime) {
-    if (bridge) return send('export', { name, text: data, mime });
-    const url = URL.createObjectURL(new Blob([data], { type: mime }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = name;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    return true;
-  }
-
-  function fileName() {
-    return board().title.replace(/[^\p{L}\p{N} ._-]/gu, '').trim().slice(0, 70) || 'Board';
-  }
+  const download = (name, data, mime) => exportDialog.download(name, data, mime, bridge ? send : null);
+  const fileName = () => exportDialog.fileName(board().title);
 
   async function loadImport() {
     if (bridge) return send('import');
@@ -1082,8 +1071,14 @@
     open: addImport,
     undo: () => undo(),
     redo: () => undo(true),
-    exportSVG: () => download(fileName() + '.svg', geometry.svg(geometry.scene(board(), { all: true }), board().title), 'image/svg+xml'),
+    exportFigure: () => exportDialog.open(board(), state.ids, state.edge, bridge ? send : null),
+    exportSVG() {
+      const figure = BoardExport.plan(board(), { includeFolded: true, padding: 30, background: 'board' });
+      if (!figure) return false;
+      return download(fileName() + '.svg', BoardExport.svg(figure), 'image/svg+xml');
+    },
     exportBoard: () => download(fileName() + '.mindmap', JSON.stringify(board(), null, 2), 'application/json'),
+    exportLibrary: () => download('Mind Mapper Library.json', JSON.stringify(state.workspace), 'application/json'),
     boards: () => togglePanel('#library', 'boards'),
     inspector: () => togglePanel('#inspector', 'inspector'),
     fit: () => fit(),
@@ -1412,7 +1407,7 @@
   });
 
   document.addEventListener('keydown', event => {
-    if (!state.workspace || event.isComposing) return;
+    if (!state.workspace || event.isComposing || event.target.closest?.('#export-dialog')) return;
     const typing = isTyping(event.target);
     const command = event.metaKey || event.ctrlKey;
     const key = event.key.toLowerCase();

@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import WebKit
 
 @main
@@ -9,6 +10,8 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
     private let legacyFixture: URL
     private let clipboard = NSPasteboard(name: .init("MindMapperChecks-" + UUID().uuidString))
     private var cancelSelection = false
+    private var failDestination = false
+    private var outputStem = "Export"
 
     private init(resourceRoot: URL, temporary: URL, legacyFixture: URL) {
         self.resourceRoot = resourceRoot
@@ -35,7 +38,7 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 40) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
             fputs("Native bridge checks timed out.\n", stderr)
             exit(124)
         }
@@ -58,7 +61,9 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
                 selection(legacyFixture)
             } else {
                 let ext = (panel.nameFieldStringValue as NSString).pathExtension
-                selection(temporary.appendingPathComponent("Export." + ext))
+                let parent = failDestination ? temporary.appendingPathComponent("Missing folder") : temporary
+                failDestination = false
+                selection(parent.appendingPathComponent(outputStem + "." + ext))
             }
         }
         editor.didFail = { message in fputs("WebKit: " + message + "\n", stderr) }
@@ -93,6 +98,113 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
             throw StoreError.message("Expected boards in the saved workspace.")
         }
         return value
+    }
+
+    private func writeFigure(_ format: String, in editor: WebEditor) async throws -> String {
+        let ready = try await editor.webView.callAsyncJavaScript(
+            """
+            const dialog = document.querySelector('#export-dialog');
+            if (!dialog.open) return false;
+            for (const [id, value] of [['format', format], ['padding', '48'], ['background', 'transparent']]) {
+                const field = document.querySelector('#export-' + id);
+                field.value = value;
+                field.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            const button = document.querySelector('#export-save');
+            if (button.disabled) return false;
+            button.click();
+            return true;
+            """,
+            arguments: ["format": format],
+            contentWorld: .page
+        )
+        try check(ready as? Bool == true, "The native figure preview could not save \(format).")
+        for _ in 0..<160 {
+            let status = try await editor.webView.callAsyncJavaScript(
+                "return document.querySelector('#export-status').textContent;",
+                contentWorld: .page
+            ) as? String ?? ""
+            if !status.isEmpty && status != "Preparing figure…" { return status }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw StoreError.message("The native \(format) figure did not finish.")
+    }
+
+    private func verifyFigureExports(_ editor: WebEditor, expectedText: String) async throws {
+        outputStem = "Figure"
+        defer { outputStem = "Export" }
+        try await check(editor.perform("exportFigure") as? Bool == true, "The Mac figure command did not open the preview.")
+        for format in ["svg", "pdf", "png", "jpeg"] {
+            let status = try await writeFigure(format, in: editor)
+            try check(status == "Figure saved.", "Saving a \(format) figure returned: \(status)")
+        }
+        func output(_ ext: String) -> URL { temporary.appendingPathComponent("Figure." + ext) }
+        let svg = try XMLDocument(contentsOf: output("svg"), options: [.nodeLoadExternalEntitiesNever])
+        guard let root = svg.rootElement(),
+              let width = root.attribute(forName: "width")?.stringValue.flatMap(Double.init),
+              let height = root.attribute(forName: "height")?.stringValue.flatMap(Double.init) else {
+            throw StoreError.message("The saved figure SVG has no explicit dimensions.")
+        }
+        guard let pdf = PDFDocument(url: output("pdf")), let page = pdf.page(at: 0), let pageRef = page.pageRef,
+              let thumbnail = CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 0,
+                                        space: CGColorSpaceCreateDeviceRGB(),
+                                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            throw StoreError.message("The saved vector PDF could not be opened.")
+        }
+        try check(pdf.pageCount == 1 && page.bounds(for: .mediaBox).size == CGSize(width: width, height: height),
+                  "The PDF page did not keep the SVG figure dimensions.")
+        try check(page.string?.contains(expectedText) == true, "The PDF did not preserve live figure text.")
+        thumbnail.scaleBy(x: 16 / width, y: 16 / height)
+        thumbnail.drawPDFPage(pageRef)
+        try check(thumbnail.data?.assumingMemoryBound(to: UInt8.self)[3] == 0, "Transparent PDF padding became opaque.")
+        guard let png = NSBitmapImageRep(data: try Data(contentsOf: output("png"))),
+              let jpeg = NSBitmapImageRep(data: try Data(contentsOf: output("jpg"))) else {
+            throw StoreError.message("The native PNG or JPEG could not be opened.")
+        }
+        try check(Double(png.pixelsWide) == width && Double(png.pixelsHigh) == height
+                  && png.colorAt(x: 0, y: 0)?.alphaComponent == 0, "The PNG lost its expected dimensions or transparency.")
+        try check(Double(jpeg.pixelsWide) == width && Double(jpeg.pixelsHigh) == height
+                  && !jpeg.hasAlpha, "The JPEG lost its expected dimensions or solid background.")
+
+        let priorSVG = try Data(contentsOf: output("svg"))
+        cancelSelection = true
+        try await check(writeFigure("svg", in: editor) == "Save cancelled.", "The preview did not report cancellation.")
+        failDestination = true
+        let failed = try await writeFigure("png", in: editor)
+        try check(failed != "Figure saved." && failed != "Save cancelled."
+                  && !FileManager.default.fileExists(atPath: temporary.appendingPathComponent("Missing folder").path),
+                  "A failed native write claimed success or left an incomplete destination.")
+        try check(Data(contentsOf: output("svg")) == priorSVG, "Cancelled save changed the prior SVG.")
+        _ = try await editor.webView.callAsyncJavaScript(
+            "document.querySelector('#export-close').click(); return true;",
+            contentWorld: .page
+        )
+        _ = try await editor.perform("exportLibrary")
+        let library = try json(at: temporary.appendingPathComponent("Figure.json"))
+        try check(library["format"] as? String == "mindmapper.workspace" && library["boards"] is [[String: Any]],
+                  "Editable library export did not retain the workspace structure.")
+    }
+
+    private func verifyInvalidExports(_ editor: WebEditor) async throws {
+        let errors = try await editor.webView.callAsyncJavaScript(
+            """
+            const bridge = window.webkit.messageHandlers.mindmapper;
+            const failures = [];
+            for (const payload of [
+                { name: 'Invalid.pdf', width: 14401, height: 1, svg: '<svg width="1" height="1"></svg>' },
+                { name: 'Invalid.png', base64: 'AAECAw==' },
+            ]) {
+                try {
+                    await bridge.postMessage({ action: 'export', ...payload });
+                    failures.push(null);
+                } catch (error) { failures.push(error.message); }
+            }
+            return failures;
+            """,
+            contentWorld: .page
+        ) as? [String]
+        try check(errors?.first?.contains("14,400") == true && errors?.last?.contains("does not match") == true,
+                  "An oversized PDF or invalid blob reached the save panel.")
     }
 
     private func runChecks() async throws {
@@ -172,6 +284,8 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
         _ = try await editor.perform("exportSVG")
         try check(String(contentsOf: temporary.appendingPathComponent("Export.svg"), encoding: .utf8) == svg,
                   "Cancelling export changed the prior export.")
+        try await verifyFigureExports(editor, expectedText: "Prototype note")
+        try await verifyInvalidExports(editor)
 
         _ = try await editor.webView.callAsyncJavaScript(
             "document.activeElement?.blur(); return true;", contentWorld: .page
@@ -226,6 +340,6 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
         guard let micY, let monitorY else { throw StoreError.message("The arranged flow lost an object.") }
         try check(micY < monitorY, "The native flow command did not arrange the selected chain top to bottom.")
 
-        print("Mac WKWebView checks passed: native load/save, legacy import, cancelled import/export, mixed edits, undo/redo, vector export, scratch clipboard, fresh reopen, left child, and vertical flow.")
+        print("Mac WKWebView checks passed: native load/save, legacy import, mixed edits, undo/redo, SVG/PDF/PNG/JPEG preview export, editable exports, cancelled/invalid/interrupted saves, scratch clipboard, fresh reopen, left child, and vertical flow.")
     }
 }

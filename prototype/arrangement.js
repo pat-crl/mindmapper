@@ -35,6 +35,8 @@
     return visited;
   }
 
+  const selectionIds = (board, ids) => collect(hierarchy(board), ids);
+
   function selections(index, ids) {
     const entries = [...new Set(ids)].filter(id => index.objects.has(id))
       .map(id => ({ id, members: collect(index, [id]) }));
@@ -71,7 +73,7 @@
   }
 
   function capture(board, ids) {
-    const included = collect(hierarchy(board), ids);
+    const included = selectionIds(board, ids);
     const objects = board.objects.filter(item => included.has(item.id)).map(item => ({
       ...item, groupId: included.has(item.groupId) ? item.groupId : null,
     }));
@@ -311,7 +313,7 @@
     }).map(([id]) => id);
   }
 
-  const api = { SELECTION, capture, insert, move, align, group, ungroup, order, snap, marquee };
+  const api = { SELECTION, selectionIds, capture, insert, move, align, group, ungroup, order, snap, marquee };
   if (typeof module !== 'undefined') module.exports = api;
   scope.BoardArrangement = api;
 })(globalThis);

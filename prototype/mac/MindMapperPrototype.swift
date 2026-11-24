@@ -154,8 +154,10 @@ final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelega
         file.addItem(command("Open Map or Library…", action: "open", key: "o"))
         file.addItem(command("Save Workspace", action: "save", key: "s"))
         file.addItem(.separator())
+        file.addItem(command("Export Figure…", action: "exportFigure", key: "e", modifiers: [.command, .shift]))
         file.addItem(command("Export Editable Board…", action: "exportBoard"))
-        file.addItem(command("Export SVG…", action: "exportSVG", key: "e", modifiers: [.command, .shift]))
+        file.addItem(command("Export Editable Library…", action: "exportLibrary"))
+        file.addItem(command("Export SVG…", action: "exportSVG"))
         file.addItem(.separator())
         file.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
 

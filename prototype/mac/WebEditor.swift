@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import UniformTypeIdentifiers
 import WebKit
 
@@ -22,6 +23,7 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
     private let chooseFile: ChooseFile
     private let pasteboard: NSPasteboard
     private var pickerOpen = false
+    private var shares: [UUID: FigureShare] = [:]
     private(set) var hasLoadedLibrary = false
     var didFail: ((String) -> Void)?
 
@@ -125,7 +127,9 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
             case "import":
                 try openFile(replyHandler)
             case "export":
-                try exportFile(body, replyHandler)
+                try outputFile(body, share: false, replyHandler)
+            case "share":
+                try outputFile(body, share: true, replyHandler)
             case "readClipboard":
                 replyHandler(Self.readClipboard(from: pasteboard), nil)
             case "writeClipboard":
@@ -235,11 +239,10 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
         }
     }
 
-    private func exportFile(_ body: [String: Any], _ reply: @escaping Reply) throws {
+    private func outputFile(_ body: [String: Any], share: Bool, _ reply: @escaping Reply) throws {
         guard let name = body["name"] as? String, !name.isEmpty, name.count <= 200,
-              name == (name as NSString).lastPathComponent, !name.contains(":"), !name.contains("\0"),
-              let text = body["text"] as? String else {
-            throw StoreError.message("Invalid export filename or content.")
+              name == (name as NSString).lastPathComponent, !name.contains(":"), !name.contains("\0") else {
+            throw StoreError.message("Invalid export filename.")
         }
         let filenameExtension = (name as NSString).pathExtension.lowercased()
         let type: UTType
@@ -247,19 +250,80 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
         case "svg": type = .svg
         case "mindmap": type = Self.mapType
         case "json": type = .json
-        default: throw StoreError.message("Choose SVG, Mind Mapper or JSON export.")
-        }
-        let bytes = Data(text.utf8)
-        guard bytes.count <= Self.maximumExportBytes else {
-            throw StoreError.message("The export exceeds the 30 MB limit.")
+        case "pdf": type = .pdf
+        case "png": type = .png
+        case "jpg", "jpeg": type = .jpeg
+        default: throw StoreError.message("Choose a supported figure or editable file format.")
         }
         let window = try windowForPicker()
+        pickerOpen = true
+        Task { @MainActor [self] in
+            do {
+                let bytes = try await Self.outputData(body, as: type)
+                if share {
+                    let id = UUID()
+                    let item = try FigureShare(name: name, bytes: bytes, id: id) { [weak self] in
+                        self?.pickerOpen = false
+                    } finished: { [weak self] in
+                        self?.shares.removeValue(forKey: id)
+                    }
+                    shares[id] = item
+                    item.show(in: webView)
+                    reply(true, nil)
+                } else {
+                    saveFile(bytes, name: name, type: type, window: window, reply)
+                }
+            } catch {
+                pickerOpen = false
+                reply(nil, error.localizedDescription)
+            }
+        }
+    }
+
+    private static func outputData(_ body: [String: Any], as type: UTType) async throws -> Data {
+        let bytes: Data
+        switch type {
+        case .pdf:
+            guard let svg = body["svg"] as? String,
+                  let width = body["width"] as? Double, let height = body["height"] as? Double else {
+                throw StoreError.message("Missing PDF drawing or page dimensions.")
+            }
+            guard svg.utf8.count <= maximumExportBytes else {
+                throw StoreError.message("The PDF drawing exceeds the 30 MB limit.")
+            }
+            bytes = try await FigurePDF.render(svg: svg, width: width, height: height)
+        case .png, .jpeg:
+            guard let encoded = body["base64"] as? String else {
+                throw StoreError.message("Missing raster export data.")
+            }
+            guard encoded.utf8.count <= ((maximumExportBytes + 2) / 3) * 4 else {
+                throw StoreError.message("The export exceeds the 30 MB limit. Choose a smaller area or scale.")
+            }
+            guard let data = Data(base64Encoded: encoded),
+                  let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  CGImageSourceGetType(source) as String? == type.identifier,
+                  CGImageSourceGetStatus(source) == .statusComplete else {
+                throw StoreError.message("The image data does not match the chosen export format.")
+            }
+            bytes = data
+        default:
+            guard let text = body["text"] as? String else {
+                throw StoreError.message("Missing text export data.")
+            }
+            bytes = Data(text.utf8)
+        }
+        guard !bytes.isEmpty, bytes.count <= maximumExportBytes else {
+            throw StoreError.message("The export is empty or exceeds the 30 MB limit.")
+        }
+        return bytes
+    }
+
+    private func saveFile(_ bytes: Data, name: String, type: UTType, window: NSWindow, _ reply: @escaping Reply) {
         let panel = NSSavePanel()
-        panel.title = "Export Board"
+        panel.title = "Export from Mind Mapper"
         panel.nameFieldStringValue = name
         panel.allowedContentTypes = [type]
         panel.canCreateDirectories = true
-        pickerOpen = true
         chooseFile(panel, window) { [self] url in
             pickerOpen = false
             guard let url else {
@@ -269,6 +333,12 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             do {
+                let extensionMatches = type == Self.mapType
+                    ? url.pathExtension.lowercased() == "mindmap"
+                    : UTType(filenameExtension: url.pathExtension.lowercased()) == type
+                guard extensionMatches else {
+                    throw StoreError.message("The filename extension must match the chosen export format.")
+                }
                 try bytes.write(to: url, options: .atomic)
                 reply(true, nil)
             } catch {

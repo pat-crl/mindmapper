@@ -4,7 +4,7 @@
 
 Run `prototype/mac/build.sh` from the project. Double-click the resulting `builds/mindmapper-prototype/Mind Mapper Prototype.app`. The build targets macOS 14.5 or later and is ad-hoc signed for local development.
 
-The prototype opens on a blank board. **Start from template** adds a mind map, flowchart or signal flow. **Example board** combines a signal chain, a mind map, a note and a stroke. The 0.1.2 build reopens workspaces created by the previous prototypes.
+The prototype opens on a blank board. **Start from template** adds a mind map, flowchart or signal flow. **Example board** combines a signal chain, a mind map, a note and a stroke. The 0.1.3 build reopens workspaces created by the previous prototypes.
 
 ## Everyday canvas
 
@@ -14,7 +14,7 @@ The prototype opens on a blank board. **Start from template** adds a mind map, f
 - Drawing, resizing, moving a selection, arranging a flow or branch and editing a connector each commit a single undoable change.
 - Pan with two-finger scroll or Space-drag. Pinch or use modifier-scroll to zoom around the pointer. Fit, Fit selection and Centre work independently of undo. Grid and object snapping are separate toggles. Hold Option to move freely during a drag.
 - Find a board from the sidebar or search within a board for text, connector labels, notes and sources. Choosing a result can reveal a folded branch. Rename in the title bar, duplicate from the library, or delete with the confirmation and undo in the editing session.
-- Import adds separate boards. Export writes an editable board or a scalable SVG.
+- Import adds separate boards. Export can save the active board as `.mindmap` or the library as `.json`. Both are editable and can be imported into another Mind Mapper workspace.
 
 ## Mind maps, flows and sketches
 
@@ -24,6 +24,16 @@ The prototype opens on a blank board. **Start from template** adds a mind map, f
 - Select flow objects and use **Arrange Flow Left to Right** or **Arrange Flow Top to Bottom**. Both work through Undo and leave the rest of the board where it is.
 - Draw with a pointer, select strokes on their line, or sweep **Erase** across part of a stroke. The remaining parts can still be moved and exported. Escape cancels a wire drag, bend edit or drawing gesture.
 
+## Figure export
+
+Choose **Export → Figure…** to preview the whole board, the selection or a named frame. Frame export crops to the frame on the canvas. Set padding and background, and turn on **Include folded branches** when the figure should show a whole tree. The preview uses the same geometry as the saved file, including text wrapping, ink and connections.
+
+- **SVG** keeps shapes and connections scalable and labels as live text. It uses local font fallbacks; the document app determines which fonts and glyphs it can display.
+- **PDF** fits the figure to one vector page at its content size. It's available in the Mac app.
+- **PNG** supports a transparent background. **JPEG** uses white when Transparent is selected. Choose a scale and review the resulting pixel dimensions before saving.
+
+Use **Save…** to name a file and **Share…** to open the Mac share picker. The local browser editor downloads SVG, PNG, JPEG and editable files.
+
 The app uses its own `~/Library/Application Support/Mind Mapper Prototype` folder. The previous workspace sits beside the current one. For an isolated run, set `MINDMAPPER_PROTOTYPE_DATA_DIR` to a scratch directory before launching the executable. The same editor can be opened from `prototype/index.html` in a local browser, where it uses a separate prototype storage key.
 
 ## Architecture
@@ -31,7 +41,7 @@ The app uses its own `~/Library/Application Support/Mind Mapper Prototype` folde
 - `board.js` validates a versioned workspace that can hold empty and populated boards. Object array order is drawing order. Position, size, style, group, lock and fold state belong to objects. Pan and zoom belong to the view.
 - Ordered tree relationships and arbitrary connectors are separate records. A feedback link can cycle without changing tree traversal. Connectors can attach to explicit object ports. Move carries descendants, and Arrange branch repositions descendants around the selected branch. Fold hides them without changing saved positions. Copy gives the copied branch and its internal links new IDs. Detach preserves positions. Group membership carries objects when the group itself moves.
 - `workspace.js` owns the command history. Text has a separate DOM editor so gestures and canvas redraws can leave input focus intact. View changes persist without creating undo steps. Dragging and sketching use a transient preview before committing.
-- `geometry.js` feeds the DOM boxes, SVG connectors, Fit and SVG export from one geometry and text wrapping pass. SVG export includes folded content so the whole board remains available. SVG text uses a system fallback family and remains text.
+- `geometry.js` feeds the DOM boxes, SVG connectors and Fit from one geometry and text wrapping pass. `export.js` uses that geometry to produce cropped standalone figures and scaled raster images. The Mac PDF renderer uses the same figure in an isolated WebKit view.
 - The native shell supplies file pickers, save and recovery, Mac menus and the bundled offline WKWebView. It acknowledges a save only after the coordinated store writes it. A stale store rejects a replacement if the on-disk copy has changed.
 
 ## Legacy files

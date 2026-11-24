@@ -46,6 +46,7 @@ done
 
 xcrun swiftc -target "$(uname -m)-apple-macosx14.5" \
   "$mac_dir/MindMapperPrototype.swift" "$mac_dir/WebEditor.swift" "$mac_dir/DocumentStore.swift" \
+  "$mac_dir/FigurePDF.swift" "$mac_dir/FigureShare.swift" \
   -o "$contents/MacOS/MindMapperPrototype"
 /usr/bin/plutil -lint "$contents/Info.plist" >&2
 /usr/bin/codesign --force --sign - --timestamp=none "$app" >&2

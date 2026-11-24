@@ -9,6 +9,8 @@
   <script defer src="../src/model.js"></script>
   <script defer src="board.js"></script>
   <script defer src="geometry.js"></script>
+  <script defer src="export.js"></script>
+  <script defer src="export-dialog.js"></script>
   <script defer src="arrangement.js"></script>
   <script defer src="workflows.js"></script>
   <script defer src="structure.js"></script>
@@ -27,10 +29,11 @@
     <button type="button" data-command="redo" aria-label="Redo" disabled>↷</button>
     <button type="button" data-command="find" aria-controls="find-panel" aria-expanded="false">Find</button>
     <button type="button" data-command="inspector" aria-pressed="false" aria-controls="inspector">Inspector</button>
-    <button type="button" class="accent" popovertarget="export-menu">Export</button>
+    <button type="button" id="export-trigger" class="accent" popovertarget="export-menu">Export</button>
     <div id="export-menu" popover>
-      <button type="button" data-command="exportSVG">SVG figure</button>
+      <button type="button" data-command="exportFigure">Figure…</button>
       <button type="button" data-command="exportBoard">Editable board</button>
+      <button type="button" data-command="exportLibrary">Editable library</button>
     </div>
   </header>
   <div class="workspace">
@@ -139,6 +142,68 @@
       <div id="properties"></div>
     </aside>
   </div>
+  <dialog id="export-dialog" aria-labelledby="export-heading">
+    <form>
+      <h2 id="export-heading">Export figure</h2>
+      <div class="export-layout">
+        <div class="export-preview" id="export-preview">
+          <img id="export-image" alt="Preview of the exported figure" hidden>
+          <p id="export-empty">Nothing to export in this area.</p>
+        </div>
+        <fieldset class="export-options" aria-label="Figure settings">
+          <div class="export-field"><label for="export-scope">Area</label>
+            <select id="export-scope" autofocus>
+              <option value="board">Whole board</option>
+              <option value="selection">Selection</option>
+              <option value="frame">Named frame</option>
+            </select>
+          </div>
+          <div class="export-field" id="export-frame-field" hidden><label for="export-frame">Frame</label> <select id="export-frame"></select></div>
+          <div class="export-field"><label for="export-format">Format</label>
+            <select id="export-format">
+              <option value="svg">SVG</option>
+              <option value="pdf">PDF</option>
+              <option value="png">PNG</option>
+              <option value="jpeg">JPEG</option>
+            </select>
+          </div>
+          <div class="export-field"><label for="export-background">Background</label>
+            <select id="export-background">
+              <option value="transparent">Transparent</option>
+              <option value="white">White</option>
+              <option value="board">Canvas</option>
+            </select>
+          </div>
+          <div class="export-field"><label for="export-padding">Padding (px)</label>
+            <select id="export-padding">
+              <option value="0">0</option>
+              <option value="12">12</option>
+              <option value="24" selected>24</option>
+              <option value="48">48</option>
+              <option value="96">96</option>
+            </select>
+          </div>
+          <div class="export-field" id="export-scale-field" hidden><label for="export-scale">Scale</label>
+            <select id="export-scale">
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="3">3×</option>
+              <option value="4">4×</option>
+            </select>
+          </div>
+          <label class="export-folds"><input type="checkbox" id="export-folds"> Include folded branches</label>
+        </fieldset>
+      </div>
+      <p id="export-size" aria-live="polite"></p>
+      <p id="export-status" role="status" hidden></p>
+      <footer>
+        <button type="button" id="export-close">Close</button>
+        <button type="button" id="export-share" hidden>Share…</button>
+        <button type="submit" id="export-save" class="accent">Save…</button>
+      </footer>
+    </form>
+  </dialog>
   <dialog id="outline-dialog" aria-labelledby="outline-heading">
     <form method="dialog">
       <h2 id="outline-heading">Paste outline</h2>
