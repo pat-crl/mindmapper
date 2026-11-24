@@ -22,6 +22,103 @@ const active = value => value.boards.find(board => board.id === value.activeBoar
 const object = (value, id) => value.objects.find(item => item.id === id);
 const dom = (page, id) => page.locator('[data-object="' + id + '"]');
 
+async function centerOf(locator) {
+  const rect = await locator.boundingBox();
+  assert.ok(rect, 'Expected a visible canvas object or handle');
+  return [rect.x + rect.width / 2, rect.y + rect.height / 2];
+}
+
+async function mappingAndDiagramming(page) {
+  const run = name => page.evaluate(command => window.MindMapperPrototype.perform(command), name);
+  await run('example');
+  await run('fit');
+  await dom(page, 'takes').click();
+  await page.getByRole('button', { name: 'Left child', exact: true }).click();
+  await page.locator('#object-editor').fill('Microphone placement');
+  await page.keyboard.press('Escape');
+  const mapped = active(await workspace(page));
+  const child = mapped.objects.find(item => item.text === 'Microphone placement');
+  assert.ok(mapped.branches.some(edge => edge.childId === child.id && edge.parentId === 'takes' && edge.side === 'left'));
+  await page.keyboard.press('Alt+ArrowLeft');
+  await expect(dom(page, 'takes')).toBeFocused();
+  await run('fit');
+
+  const port = (id, side) => page.locator('[data-port-object="' + id + '"][data-port="' + side + '"]');
+  const dragToPort = async (handle, id, side) => {
+    await page.mouse.move(...await centerOf(handle));
+    await page.mouse.down();
+    await page.mouse.move(...await centerOf(dom(page, id)), { steps: 8 });
+    await expect(dom(page, id)).toHaveAttribute('data-target', 'true');
+    await expect(page.locator('#wire-preview path')).toHaveCount(1);
+    await page.mouse.move(...await centerOf(port(id, side)));
+    await page.mouse.up();
+  };
+  await dom(page, 'mic').hover();
+  await dragToPort(port('mic', 'bottom'), 'note', 'left');
+  const wired = active(await workspace(page));
+  const connector = wired.links.find(link => !mapped.links.some(previous => previous.id === link.id));
+  assert.deepEqual(connector.from, { objectId: 'mic', port: 'bottom' });
+  assert.deepEqual(connector.to, { objectId: 'note', port: 'left' });
+  assert.deepEqual(wired.branches, mapped.branches);
+
+  await run('fit');
+  await dragToPort(page.locator('[data-wire-end="from"]'), 'takes', 'top');
+  await dragToPort(page.locator('[data-wire-end="to"]'), 'monitor', 'bottom');
+  const reconnected = active(await workspace(page)).links.find(link => link.id === connector.id);
+  assert.deepEqual(reconnected.from, { objectId: 'takes', port: 'top' });
+  assert.deepEqual(reconnected.to, { objectId: 'monitor', port: 'bottom' });
+  await run('fit');
+  const bend = page.locator('[data-bend]').first();
+  const [bx, by] = await centerOf(bend);
+  await page.mouse.move(bx, by);
+  await page.mouse.down();
+  await page.mouse.move(bx + 52, by - 43, { steps: 8 });
+  await page.mouse.up();
+  const pinned = active(await workspace(page)).links.find(link => link.id === connector.id);
+  assert.ok(pinned.waypoints?.length);
+  const movedBend = await centerOf(bend);
+  await page.mouse.move(...movedBend);
+  await page.mouse.down();
+  await page.mouse.move(movedBend[0] - 20, movedBend[1] + 30, { steps: 5 });
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  assert.deepEqual(active(await workspace(page)).links.find(link => link.id === connector.id), pinned);
+
+  await dom(page, 'monitor').click();
+  await page.keyboard.press('ArrowRight');
+  assert.deepEqual(active(await workspace(page)).links.find(link => link.id === connector.id).waypoints, pinned.waypoints);
+  await run('new');
+  if (await page.locator('#inspector').isVisible()) await run('inspector');
+  const canvas = await page.locator('#viewport').boundingBox();
+  const x = canvas.x + 260, y = canvas.y + 280;
+  await page.getByRole('button', { name: 'Draw', exact: true }).click();
+  await page.mouse.move(x - 90, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 90, y, { steps: 18 });
+  await page.mouse.up();
+  const drawn = active(await workspace(page));
+  assert.equal(drawn.objects.length, 1);
+  const stroke = drawn.objects[0];
+  await page.getByRole('button', { name: 'Erase', exact: true }).click();
+  await page.mouse.move(x, y - 30);
+  await page.mouse.down();
+  await page.mouse.move(x, y + 30, { steps: 6 });
+  await page.mouse.up();
+  const erased = active(await workspace(page));
+  assert.equal(erased.objects.length, 2);
+  assert.equal(erased.objects[0].id, stroke.id);
+  await run('undo');
+  assert.deepEqual(active(await workspace(page)).objects, [stroke]);
+  await page.mouse.move(x, y - 30);
+  await page.mouse.down();
+  await page.mouse.move(x, y + 30, { steps: 6 });
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  assert.deepEqual(active(await workspace(page)).objects, [stroke]);
+  await page.mouse.click(x, y);
+  await expect(dom(page, stroke.id)).toHaveAttribute('aria-pressed', 'true');
+}
+
 async function dailyCanvas(page) {
   const run = name => page.evaluate(command => window.MindMapperPrototype.perform(command), name);
   await run('new');
@@ -276,6 +373,7 @@ async function main() {
       assert.equal(await fs.readFile(legacyPath, 'utf8'), before);
     }
     await dailyCanvas(page);
+    await mappingAndDiagramming(page);
 
     const final = await workspace(page);
     await context.close();
@@ -285,7 +383,7 @@ async function main() {
     assert.equal(await reopened.evaluate(() => window.MindMapperPrototype.ready), true);
     assert.deepEqual(await workspace(reopened), final);
     assert.deepEqual(browserErrors, []);
-    console.log('Browser canvas passed: editing, resizing, marquee, grouping, alignment, clipboard, board library, outline, folded search, strokes, SVG and save/reopen.'
+    console.log('Browser canvas passed: everyday editing, two-sided branches, port drag and preview, reconnection, pinned and cancelled bends, drawn and split strokes, SVG and save/reopen.'
       + (legacyPath ? ' Legacy map copy imported without changes to the original.' : ''));
   } finally {
     if (context) await context.close();

@@ -58,8 +58,8 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
             """
             if (!window.MindMapperPrototype) throw new Error('The editor is still opening.');
             const field = document.activeElement;
-            if (field?.matches('textarea, input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="password"], input[type="tel"], input[type="number"]') ||
-                field?.isContentEditable) {
+            const textField = field?.matches('textarea, input:not([type]), input[type="text"], input[type="search"], input[type="url"], input[type="email"], input[type="password"], input[type="tel"], input[type="number"]');
+            if (field?.getClientRects().length && (textField || field.isContentEditable)) {
                 if (action === 'undo' || action === 'redo') return document.execCommand(action);
                 if (['cut', 'copy', 'paste', 'selectAll'].includes(action)) return { standardTextAction: action };
             }

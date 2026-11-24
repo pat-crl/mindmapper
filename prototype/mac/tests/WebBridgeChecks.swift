@@ -204,6 +204,28 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
         try await check(reopened.perform("save") as? Bool == true, "The recreated WKWebView could not save the reopened workspace.")
         try check(Data(contentsOf: store.libraryURL) == original, "Reopening the workspace changed the saved board.")
 
-        print("Mac WKWebView checks passed: native load/save, legacy import, cancelled import/export, mixed edits, undo/redo, vector export, scratch clipboard with linked paste and rich text, and fresh reopen.")
+        try await check(reopened.perform("example") as? Bool == true, "Could not open a new example for mapping checks.")
+        _ = try await reopened.webView.callAsyncJavaScript(
+            "document.querySelector('[data-object=takes]').click(); return true;", contentWorld: .page
+        )
+        try await check(reopened.perform("branchLeft") as? Bool == true, "The native left-child command failed.")
+        try await check(reopened.perform("save") as? Bool == true, "The added left branch did not save.")
+        let mapping = try json(at: store.libraryURL)
+        let mappingID = mapping["activeBoardId"] as? String
+        let mappedBoard = try boards(at: store.libraryURL).first { $0["id"] as? String == mappingID }
+        let branches = mappedBoard?["branches"] as? [[String: Any]] ?? []
+        try check(branches.contains { $0["parentId"] as? String == "takes" && $0["side"] as? String == "left" },
+                  "The native branch command did not keep the selected side.")
+        try await check(reopened.perform("selectAll") as? Bool == true, "Could not select the example before flow arrangement.")
+        try await check(reopened.perform("flowDown") as? Bool == true, "The native vertical flow command failed.")
+        try await check(reopened.perform("save") as? Bool == true, "The rearranged flow did not save.")
+        let arranged = try boards(at: store.libraryURL).first { $0["id"] as? String == mappingID }
+        let objects = arranged?["objects"] as? [[String: Any]] ?? []
+        let micY = objects.first { $0["id"] as? String == "mic" }?["y"] as? Double
+        let monitorY = objects.first { $0["id"] as? String == "monitor" }?["y"] as? Double
+        guard let micY, let monitorY else { throw StoreError.message("The arranged flow lost an object.") }
+        try check(micY < monitorY, "The native flow command did not arrange the selected chain top to bottom.")
+
+        print("Mac WKWebView checks passed: native load/save, legacy import, cancelled import/export, mixed edits, undo/redo, vector export, scratch clipboard, fresh reopen, left child, and vertical flow.")
     }
 }

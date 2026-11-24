@@ -60,12 +60,15 @@ main { position: relative; flex: 1; min-width: 0; }
   background-image: radial-gradient(var(--grid) var(--grid-dot, .75px), transparent calc(var(--grid-dot, .75px) + .15px));
   background-size: 18px 18px; background-position: center;
 }
-#viewport[data-tool=draw], #viewport[data-tool=link] { cursor: crosshair; }
+#viewport[data-tool=draw], #viewport[data-tool=link], #viewport[data-tool=erase] { cursor: crosshair; }
 #viewport[data-panning=true] { cursor: grabbing; }
 #viewport[data-grid=false] { background-image: none; }
-#world, #objects, #diagram, #stroke-preview { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; }
+#world, #objects, #diagram, #stroke-preview, #wire-preview {
+  position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible;
+}
 #world { transform-origin: 0 0; }
-#diagram, #stroke-preview { width: 1px; height: 1px; pointer-events: none; }
+#diagram, #stroke-preview, #wire-preview { width: 1px; height: 1px; pointer-events: none; }
+#wire-preview .live-wire { stroke: var(--blue); stroke-width: 2; stroke-dasharray: 4 3; fill: none; }
 .edge-target { pointer-events: stroke; cursor: pointer; }
 .object, #object-editor {
   position: absolute; padding: 7px 10px; margin: 0; text-align: start;
@@ -84,7 +87,8 @@ main { position: relative; flex: 1; min-width: 0; }
 .object[data-type=branch] { border-radius: 10px; }
 .object[data-type=group] { border-color: transparent; align-content: start; background: transparent; pointer-events: none; }
 .object[data-type=group] > span { pointer-events: auto; }
-.object[data-type=stroke] { background: transparent; border-color: transparent; }
+.object[data-type=stroke] { background: transparent; border-color: transparent; pointer-events: none; }
+.object[data-type=stroke] .stroke-hit { pointer-events: stroke; }
 .object.line-object::after { content: ""; position: absolute; inset: -5px 0; }
 .object[data-locked=true] { border-style: dashed; }
 .object[data-locked=true]::before { content: "Locked"; font-size: 10px; color: var(--quiet); }
@@ -95,6 +99,7 @@ main { position: relative; flex: 1; min-width: 0; }
   border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue);
 }
 .object[data-link-source=true] { border-style: dashed; }
+.object[data-target=true] { outline: 2px solid var(--blue); outline-offset: 3px; }
 .object span { display: block; white-space: pre; pointer-events: none; }
 #marquee {
   position: absolute; pointer-events: none; z-index: 2; border: 1px solid var(--blue);
@@ -113,6 +118,18 @@ main { position: relative; flex: 1; min-width: 0; }
 .handle:hover { background: var(--selection); }
 .handle[data-corner=nw], .handle[data-corner=se] { cursor: nwse-resize; }
 .handle[data-corner=ne], .handle[data-corner=sw] { cursor: nesw-resize; }
+.port, .wire-handle {
+  position: absolute; z-index: 3; min-height: 0; padding: 0;
+  width: calc(13px * var(--inverse-zoom, 1)); height: calc(13px * var(--inverse-zoom, 1));
+  transform: translate(-50%, -50%); border: 0; border-radius: 50%;
+  background: transparent; cursor: crosshair;
+}
+.port::after, .wire-handle::after {
+  content: ""; position: absolute; inset: 2px; border-radius: inherit;
+  background: var(--paper); border: 1px solid var(--blue);
+}
+.port:hover::after, .port[data-target=true]::after, .wire-handle:hover::after { background: var(--blue); }
+.wire-handle[data-bend] { border-radius: 2px; cursor: move; }
 #object-editor {
   z-index: 2; background: var(--paper); border-color: var(--blue); line-height: 1.25;
   resize: none; overflow: auto;
@@ -130,6 +147,7 @@ main { position: relative; flex: 1; min-width: 0; }
 .tools .tool-caret { padding-inline: 4px; }
 .view { position: absolute; right: 10px; bottom: 10px; }
 .snaps { position: absolute; left: 10px; bottom: 10px; }
+#branch-tools { position: absolute; top: 52px; left: 50%; transform: translateX(-50%); }
 .view output { min-width: 41px; text-align: center; font-variant-numeric: tabular-nums; }
 #empty {
   position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
@@ -140,7 +158,7 @@ main { position: relative; flex: 1; min-width: 0; }
 #empty button { pointer-events: auto; border-color: var(--line); background-color: var(--paper); }
 #empty button.accent { background: var(--selection); }
 #notice {
-  position: absolute; inset: 55px 10px auto; max-width: 490px; margin-inline: auto;
+  position: absolute; inset: auto 10px 58px; max-width: 490px; margin-inline: auto;
   z-index: 5; padding-inline: 8px; justify-content: space-between;
 }
 #notice span { white-space: normal; overflow-wrap: anywhere; }
@@ -178,9 +196,11 @@ dialog::backdrop { background: #0006; }
 button.danger { color: var(--error); border-color: var(--line); }
 @media (max-width: 860px) {
   .snaps { bottom: 47px; }
+  #notice { bottom: 93px; }
 }
 @media (max-width: 760px) {
   #library { width: 145px; }
   .tools button { padding-inline: 5px; }
+  #branch-tools { top: 84px; }
   #inspector { position: absolute; right: 0; top: 111px; bottom: 0; z-index: 3; box-shadow: -5px 0 16px var(--shadow); }
 }

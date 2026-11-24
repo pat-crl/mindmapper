@@ -5,6 +5,9 @@
   const geometry = BoardGeometry;
   const layout = BoardArrangement;
   const workflows = BoardWorkflows;
+  const structure = BoardStructure;
+  const ink = BoardInk;
+  const wires = BoardWireControls;
   const $ = selector => document.querySelector(selector);
   const viewport = $('#viewport');
   const world = $('#world');
@@ -20,7 +23,7 @@
   const state = {
     workspace: null, ids: new Set(), edge: null, tool: 'select', connect: null,
     edit: null, gesture: null, space: false, prior: [], next: [], previousBoard: null,
-    shape: 'rounded', grid: true, snapGrid: false, snapObjects: true, findMatches: [],
+    shape: 'rounded', grid: true, snapGrid: false, snapObjects: true, findMatches: [], hoverPort: null,
     revision: 0, saved: 0, saving: null, timer: null, baseline: null,
   };
   let currentScene;
@@ -152,7 +155,7 @@
     const visible = new Set(model.visibleObjects(active).map(item => item.id));
     state.ids = new Set([...state.ids].filter(id => visible.has(id)));
     if (![...active.links, ...active.branches].some(link => link.id === state.edge)) state.edge = null;
-    if (!visible.has(state.connect)) state.connect = null;
+    if (!visible.has(state.connect?.objectId)) state.connect = null;
   }
 
   function choose(ids = [], edge = null) {
@@ -163,9 +166,11 @@
   function updateSelection() {
     for (const button of objectLayer.children) {
       setPressed(button, state.ids.has(button.dataset.object));
-      button.dataset.linkSource = String(state.connect === button.dataset.object);
+      button.dataset.linkSource = String(state.connect?.objectId === button.dataset.object);
     }
     renderHandles();
+    renderWireControls();
+    renderBranchTools();
     renderDiagram();
     renderInspector();
   }
@@ -209,7 +214,9 @@
   }
 
   function fit(area = geometry.bounds(currentScene)) {
-    const inset = Math.max(58, $('.tools').offsetHeight + 16);
+    const branchTools = $('#branch-tools');
+    const inset = Math.max(58, $('.tools').offsetHeight + 16,
+      branchTools.hidden ? 0 : branchTools.offsetTop + branchTools.offsetHeight + 10);
     const zoom = Math.min(1.5, (viewport.clientWidth - 20) / area.width, (viewport.clientHeight - 2 * inset) / area.height);
     const value = Math.max(.1, zoom);
     withView({ zoom: value, x: -(area.x + area.width / 2) * value, y: -(area.y + area.height / 2) * value });
@@ -228,6 +235,9 @@
     if (drag?.kind === 'resize') {
       return { ...active, objects: active.objects.map(object => object.id === drag.object.id
         ? resizeObject(object, drag) : object) };
+    }
+    if (drag?.kind === 'bend' && drag.moving) {
+      return { ...active, links: active.links.map(edge => edge.id === drag.edgeId ? { ...edge, waypoints: drag.points } : edge) };
     }
     if (drag?.kind !== 'move' || (!drag.dx && !drag.dy)) return active;
     const draft = { ...active, objects: active.objects.map(object => ({ ...object })) };
@@ -260,7 +270,7 @@
     const layer = $('#handles');
     const selected = state.ids.size === 1 && currentScene.objects.find(object => state.ids.has(object.id));
     const focus = document.activeElement?.dataset.corner;
-    if (!selected || selected.locked || state.edit || state.tool !== 'select') {
+    if (!selected || selected.shape === 'junction' || selected.locked || state.edit || state.tool !== 'select') {
       layer.replaceChildren();
       return;
     }
@@ -279,6 +289,39 @@
     });
     layer.replaceChildren(...handles);
     if (focus) handles.find(handle => handle.dataset.corner === focus)?.focus({ preventScroll: true });
+  }
+
+  function selectedBranch() {
+    const id = state.ids.size === 1 ? [...state.ids][0] : null;
+    const item = currentScene?.byId.get(id);
+    return item?.type === 'branch' ? item : null;
+  }
+
+  function renderBranchTools() {
+    const branch = selectedBranch();
+    shown('#branch-tools', Boolean(branch && state.tool === 'select'));
+    if (!branch) return;
+    const incoming = board().branches.find(edge => edge.childId === branch.id);
+    shown('#branch-tools [data-command="branchLeft"]', !incoming || incoming.side === 'left');
+    shown('#branch-tools [data-command="branchRight"]', !incoming || incoming.side === 'right');
+    shown('#branch-tools [data-command="branchSibling"]', Boolean(incoming));
+    shown('#branch-tools [data-command="branchFold"]', board().branches.some(edge => edge.parentId === branch.id));
+    $('#branch-tools [data-command="branchFold"]').textContent = branch.folded ? 'Unfold' : 'Fold';
+  }
+
+  function renderWireControls() {
+    const gesture = state.gesture;
+    const connecting = gesture?.kind === 'wire';
+    const portLayer = $('#ports');
+    const edgeLayer = $('#wire-handles');
+    const showPorts = !state.edit && (state.tool === 'select' || state.tool === 'link') && (!gesture || connecting);
+    const selected = !state.edge && state.ids.size === 1 ? [...state.ids][0] : null;
+    const ids = showPorts ? [selected, state.hoverPort, gesture?.target?.objectId] : [];
+    wires.renderPorts(portLayer, currentScene, ids, gesture?.target);
+    const freeEdge = !connecting && state.tool === 'select' && board().links.some(link => link.id === state.edge);
+    wires.renderHandles(edgeLayer, freeEdge ? currentScene.edges.find(edge => edge.id === state.edge) : null);
+    wires.preview($('#wire-preview'), currentScene, connecting ? gesture : null);
+    for (const node of objectLayer.children) node.dataset.target = String(connecting && node.dataset.object === gesture.target?.objectId);
   }
 
   function renderGuides() {
@@ -310,9 +353,22 @@
     let markup = drawing.objects.filter(object => object.type === 'group').map(object => geometry.shapeMarkup(object, colors)).join('');
     markup += drawing.edges.map(edge => geometry.edgeMarkup(edge, colors, true, edge.id === state.edge)).join('');
     diagram.innerHTML = markup;
-    $('#stroke-preview').innerHTML = state.gesture?.kind === 'stroke'
-      ? geometry.strokeMarkup({ x: 0, y: 0, points: state.gesture.points, style: { stroke: colors.blue } }, colors)
-      : '';
+    const preview = $('#stroke-preview');
+    const gesture = state.gesture;
+    if (gesture?.kind === 'stroke') {
+      preview.innerHTML = geometry.strokeMarkup({ x: 0, y: 0, points: gesture.points, style: { stroke: colors.blue } }, colors);
+    } else if (gesture?.kind === 'erase') {
+      const [x, y] = gesture.points.at(-1);
+      const cursor = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      cursor.setAttribute('cx', x);
+      cursor.setAttribute('cy', y);
+      cursor.setAttribute('r', gesture.radius);
+      cursor.setAttribute('fill', colors.paper);
+      cursor.setAttribute('fill-opacity', '.5');
+      cursor.setAttribute('stroke', colors.blue);
+      cursor.setAttribute('vector-effect', 'non-scaling-stroke');
+      preview.replaceChildren(cursor);
+    } else preview.replaceChildren();
   }
 
   function setBounds(element, object) {
@@ -334,8 +390,9 @@
       button.dataset.object = object.id;
       button.dataset.type = object.type;
       button.dataset.locked = String(object.locked);
-      button.dataset.linkSource = String(state.connect === object.id);
-      button.setAttribute('aria-label', [object.text || object.type, object.locked && 'locked', object.folded && 'folded'].filter(Boolean).join(', '));
+      button.dataset.linkSource = String(state.connect?.objectId === object.id);
+      button.setAttribute('aria-label', [object.text || object.shape || object.type,
+        object.locked && 'locked', object.folded && 'folded'].filter(Boolean).join(', '));
       setPressed(button, state.ids.has(object.id));
       setBounds(button, object);
       if (object.type === 'shape' || object.type === 'note' || object.type === 'stroke') {
@@ -345,8 +402,16 @@
         figure.setAttribute('viewBox', [object.x, object.y, object.width, object.height].join(' '));
         figure.innerHTML = object.type === 'stroke'
           ? geometry.strokeMarkup(object, palette) : geometry.shapeMarkup(object, palette);
+        if (object.type === 'stroke' && figure.firstElementChild) {
+          const hit = figure.firstElementChild.cloneNode();
+          hit.setAttribute('class', 'stroke-hit');
+          hit.setAttribute('stroke', 'transparent');
+          hit.setAttribute('stroke-width', '13');
+          hit.setAttribute('vector-effect', 'non-scaling-stroke');
+          figure.append(hit);
+        }
         button.append(figure);
-        if (object.shape === 'line') button.classList.add('line-object');
+        if (object.shape === 'line' || object.shape === 'junction') button.classList.add('line-object');
       } else if (object.type !== 'group') {
         if (object.style.fill) button.style.backgroundColor = object.style.fill;
         if (object.style.stroke) button.style.borderColor = object.style.stroke;
@@ -364,6 +429,8 @@
     objectLayer.replaceChildren(...nodes);
     if (focused && !state.edit) nodes.find(button => button.dataset.object === focused)?.focus({ preventScroll: true });
     renderHandles();
+    renderWireControls();
+    renderBranchTools();
     renderGuides();
     renderDiagram();
     viewTransform();
@@ -400,7 +467,10 @@
     group.textContent = label;
     const control = document.createElement(options.values ? 'select' : options.multiline ? 'textarea' : 'input');
     if (options.values) {
-      for (const item of options.values) control.add(new Option(item, item));
+      for (const item of options.values) {
+        const [title, value] = Array.isArray(item) ? item : [item, item];
+        control.add(new Option(title, value));
+      }
     } else if (!options.multiline) control.type = options.type || 'text';
     if (control.type === 'checkbox') control.checked = value;
     else control.value = value;
@@ -439,13 +509,31 @@
         else record[key] = value;
       });
       props.append(
-        makeField('Label', edge.label, value => update('label', value), { maxLength: 120 }),
+        makeField('Label', edge.label, value => update('label', value), { maxLength: 500 }),
         makeField('Route', edge.style.route, value => update('route', value, 'style'), { values: ['straight', 'curve', 'elbow'] }),
         makeField('Arrow', edge.style.arrow, value => update('arrow', value, 'style'), { values: ['none', 'start', 'end', 'both'] }),
         makeField('Dashed', edge.style.dashed, value => update('dashed', value, 'style'), { type: 'checkbox' }));
-      if (edge.from) props.append(
-        makeField('Start port', edge.from.port, value => update('port', value, 'from'), { values: ports }),
-        makeField('End port', edge.to.port, value => update('port', value, 'to'), { values: ports }));
+      if (edge.from) {
+        const candidates = currentScene.objects.filter(wires.eligible).map(item => [objectCaption(item), item.id]);
+        props.append(
+          makeField('Start object', edge.from.objectId, value => reconnect(edge.id, 'from', wires.endpoint(value, edge.from.port)), { values: candidates }),
+          makeField('Start port', edge.from.port, value => update('port', value, 'from'), { values: ports }),
+          makeField('End object', edge.to.objectId, value => reconnect(edge.id, 'to', wires.endpoint(value, edge.to.port)), { values: candidates }),
+          makeField('End port', edge.to.port, value => update('port', value, 'to'), { values: ports }),
+          makeField('Wire colour', edge.style.color, value => update('color', value.trim(), 'style'),
+            { maxLength: 11, placeholder: 'Default or #hex' }),
+          button('Reverse connector', () => reverse(edge.id)));
+        if (edge.waypoints?.length) props.append(button('Reset automatic route', () => change(active => {
+          active.links.find(record => record.id === edge.id).waypoints = [];
+        })));
+        else if (edge.style.route === 'elbow') {
+          const geometry = currentScene.edges.find(record => record.id === edge.id);
+          if (geometry && !geometry.bends.length) props.append(button('Add bend', () => change(active => {
+            const [x, y] = geometry.label;
+            active.links.find(record => record.id === edge.id).waypoints = [[x, y + 8]];
+          })));
+        }
+      }
       props.append(button(edge.parentId ? 'Detach branch' : 'Delete connector', deleteSelection));
       restoreInspectorFocus(props, focus);
       return;
@@ -461,7 +549,7 @@
       return;
     }
     const typeNames = { branch: 'Mind map node', group: 'Frame', shape: 'Shape', text: 'Text', note: 'Note', stroke: 'Stroke' };
-    description.textContent = typeNames[selected.type];
+    description.textContent = selected.shape === 'junction' ? 'Junction' : typeNames[selected.type];
     const update = (key, value) => change(active => { active.objects.find(item => item.id === selected.id)[key] = value; });
     const setStyle = (key, value) => change(active => {
       active.objects.find(item => item.id === selected.id).style[key] = value;
@@ -469,7 +557,7 @@
     if (selected.type === 'shape') props.append(makeField('Shape', selected.shape, value => change(active => {
       const item = active.objects.find(object => object.id === selected.id);
       const template = model.createObject('shape', [item.x, item.y], { shape: value });
-      if (value === 'line' || item.shape === 'line') {
+      if ([value, item.shape].some(shape => shape === 'line' || shape === 'junction')) {
         item.width = template.width;
         item.height = template.height;
       }
@@ -479,7 +567,7 @@
     if (selected.shape === 'line') props.append(makeField('Slope', selected.lineDirection || 'down',
       value => update('lineDirection', value), { values: ['down', 'up'], disabled: selected.locked }));
     const geometryFields = { type: 'number', min: 1, max: 1000000, disabled: selected.locked };
-    for (const dimension of ['width', 'height']) {
+    for (const dimension of selected.shape === 'junction' ? [] : ['width', 'height']) {
       props.append(makeField(dimension === 'width' ? 'Width' : 'Height', Math.round(selected[dimension]), value => {
         if (!value) return;
         const difference = Number(value) - selected[dimension];
@@ -504,7 +592,7 @@
       { maxLength: 11, placeholder: 'Default or #hex' });
     if (selected.type !== 'stroke' && selected.shape !== 'line') stylePanel.append(colorField('Fill', 'fill'));
     stylePanel.append(colorField('Stroke', 'stroke'));
-    if (selected.type !== 'stroke' && selected.shape !== 'line') {
+    if (selected.type !== 'stroke' && !['line', 'junction'].includes(selected.shape)) {
       stylePanel.append(colorField('Text colour', 'textColor'),
         makeField('Text size', selected.style.fontSize || 13, value => { if (value) setStyle('fontSize', Number(value)); },
           { type: 'number', min: 8, max: 96 }),
@@ -512,21 +600,39 @@
         makeField('Italic', Boolean(selected.style.italic), value => setStyle('italic', value), { type: 'checkbox' }));
     }
     props.append(stylePanel);
-    const candidates = currentScene.objects.filter(item => item.id !== selected.id && item.type !== 'group');
-    if (candidates.length && selected.type !== 'group') {
+    const candidates = currentScene.objects.filter(item => item.id !== selected.id && wires.eligible(item));
+    if (candidates.length && wires.eligible(selected)) {
       const target = document.createElement('select');
       target.setAttribute('aria-label', 'Connect to');
       target.add(new Option('Connect to…', ''));
-      for (const object of candidates) target.add(new Option(object.text.split('\n')[0] || object.type, object.id));
-      target.addEventListener('change', () => { if (target.value) addLink(selected.id, target.value); });
+      for (const object of candidates) target.add(new Option(objectCaption(object), object.id));
+      target.addEventListener('change', () => { if (target.value) addLink(wires.endpoint(selected.id), wires.endpoint(target.value)); });
       props.append(target);
     }
-    if (selected.type === 'branch') props.append(
-      button(selected.folded ? 'Unfold branch' : 'Fold branch', () => update('folded', !selected.folded)),
-      button('Arrange branch', arrange),
-      button('Detach branch', () => change(active => model.detachBranch(active, selected.id))));
+    if (selected.type === 'branch') {
+      const incoming = board().branches.find(record => record.childId === selected.id);
+      const excluded = new Set([selected.id, ...model.descendants(board(), selected.id)]);
+      const parents = currentScene.objects.filter(item => item.type === 'branch' && !excluded.has(item.id)
+        && (!item.locked || item.id === incoming?.parentId));
+      props.append(button(selected.folded ? 'Unfold branch' : 'Fold branch', () => update('folded', !selected.folded)),
+        button('Arrange branch', arrange));
+      if (parents.length) {
+        props.append(makeField('Branch parent', incoming?.parentId || '', value => change(active => {
+          if (value) structure.reparent(active, selected.id, value);
+          else model.detachBranch(active, selected.id);
+        }), { values: [['Independent branch', ''], ...parents.map(item => [objectCaption(item), item.id])], disabled: selected.locked }));
+      }
+      if (incoming && !board().branches.some(record => record.childId === incoming.parentId)) {
+        props.append(makeField('Branch side', incoming.side, value => change(active =>
+          structure.reparent(active, selected.id, incoming.parentId, value)), { values: ['left', 'right'], disabled: selected.locked }));
+      }
+    }
     props.append(arrangementFields(false, selected.type === 'group'));
     restoreInspectorFocus(props, focus);
+  }
+
+  function objectCaption(object) {
+    return object.text.trim().split('\n')[0].slice(0, 80) || object.shape || object.type;
   }
 
   function restoreInspectorFocus(props, name) {
@@ -557,7 +663,9 @@
       });
       group.append(alignment);
     }
-    if (multiple) group.append(button('Group in frame', () => void perform('group')));
+    if (multiple) group.append(button('Group in frame', () => void perform('group')),
+      button('Arrange flow left to right', () => void perform('flowRight')),
+      button('Arrange flow top to bottom', () => void perform('flowDown')));
     if (frame || (multiple && [...state.ids].some(id => currentScene.byId.get(id)?.type === 'group'))) {
       group.append(button('Ungroup frame', () => void perform('ungroup')));
     }
@@ -569,6 +677,7 @@
   function setTool(tool) {
     state.tool = tool;
     state.connect = null;
+    state.hoverPort = null;
     viewport.dataset.tool = tool;
     for (const control of document.querySelectorAll('button[data-tool]')) setPressed(control, control.dataset.tool === tool);
     if (state.workspace) {
@@ -585,7 +694,7 @@
     if (state.edit?.id === id) return;
     if (!finishEdit()) return;
     const object = currentScene.byId.get(id);
-    if (!object || object.type === 'stroke' || object.shape === 'line' || object.locked) return;
+    if (!object || object.type === 'stroke' || ['line', 'junction'].includes(object.shape) || object.locked) return;
     state.edit = { id, text: object.text };
     editor.value = object.text;
     editor.hidden = false;
@@ -593,20 +702,24 @@
     editor.style.height = Math.max(object.height, 55) + 'px';
     objectID(id).hidden = true;
     renderHandles();
+    renderWireControls();
     editor.focus();
     editor.setSelectionRange(editor.value.length, editor.value.length);
   }
 
-  function finishEdit(cancel = false) {
+  function finishEdit(cancel = false, restoreFocus = true) {
     const editing = state.edit;
     if (!editing) return true;
     const value = editor.value;
+    const hadFocus = restoreFocus && document.activeElement === editor;
     state.edit = null;
+    if (hadFocus) viewport.focus({ preventScroll: true });
     editor.hidden = true;
     const node = objectID(editing.id);
     if (node) node.hidden = false;
     if (cancel || value === editing.text) {
       renderHandles();
+      renderWireControls();
       return true;
     }
     const changed = change(active => {
@@ -618,6 +731,7 @@
       state.edit = editing;
       editor.hidden = false;
       if (node) node.hidden = true;
+      if (hadFocus) editor.focus({ preventScroll: true });
     }
     return changed;
   }
@@ -631,32 +745,42 @@
     const object = freshObject(type, point, type === 'group' ? 'Frame' : '');
     if (change(active => active.objects.push(object), () => choose([object.id]))) {
       setTool('select');
-      if (object.shape === 'line') objectID(object.id)?.focus();
+      if (['line', 'junction'].includes(object.shape)) objectID(object.id)?.focus();
       else beginEdit(object.id);
     }
   }
 
-  function addBranch(from, sibling) {
-    const edge = board().branches.find(record => record.childId === from);
-    const parentId = sibling && edge ? edge.parentId : from;
-    const parent = currentScene.byId.get(parentId);
-    if (!parent || !finishEdit()) return;
-    const object = freshObject('branch', [parent.x + parent.width + 45, parent.y]);
-    const side = sibling && edge ? edge.side : 'right';
-    if (change(active => {
-      const peers = active.branches.filter(record => record.parentId === parentId);
-      const order = sibling && edge ? edge.order + 1 : Math.max(-1, ...peers.map(record => record.order)) + 1;
-      for (const peer of peers) if (peer.order >= order) peer.order += 1;
-      active.objects.push(object);
-      active.objects.find(node => node.id === parentId).folded = false;
-      active.branches.push({ id: model.uid(), parentId, childId: object.id, side, order, label: '',
-        style: { arrow: 'none', route: 'curve' } });
-      model.relayoutBranch(active, parentId);
-    }, () => choose([object.id]))) beginEdit(object.id);
+  function addBranch(from, sibling, side) {
+    if (!from || !finishEdit()) return false;
+    const incoming = board().branches.find(edge => edge.childId === from);
+    if (side && incoming && incoming.side !== side) {
+      notice('This branch grows to the ' + incoming.side + '.');
+      return false;
+    }
+    let id;
+    const added = change(active => { id = structure.addBranch(active, from, { kind: sibling ? 'sibling' : 'child', side }); },
+      () => choose([id]));
+    if (added && id) {
+      revealObject(id);
+      beginEdit(id);
+    }
+    return added;
+  }
+
+  function revealObject(id) {
+    const rect = currentScene.byId.get(id);
+    if (!rect) return;
+    const view = board().view;
+    const x = viewport.clientWidth / 2 + view.x + rect.x * view.zoom;
+    const y = viewport.clientHeight / 2 + view.y + rect.y * view.zoom;
+    const inset = Math.max(65, $('#branch-tools').offsetTop + $('#branch-tools').offsetHeight + 12);
+    if (x >= 12 && x + rect.width * view.zoom <= viewport.clientWidth - 12
+        && y >= inset && y + rect.height * view.zoom <= viewport.clientHeight - 56) return;
+    withView({ ...view, x: -(rect.x + rect.width / 2) * view.zoom, y: -(rect.y + rect.height / 2) * view.zoom });
   }
 
   function addLink(from, to) {
-    const record = { id: model.uid(), from: { objectId: from, port: 'auto' }, to: { objectId: to, port: 'auto' },
+    const record = { id: model.uid(), from, to,
       label: '', style: { route: 'elbow', arrow: 'end', dashed: false } };
     setTool('select');
     if (change(active => active.links.push(record), () => choose([], record.id))) {
@@ -664,6 +788,32 @@
       setPressed($('button[data-command="inspector"]'), true);
       viewTransform();
       renderInspector();
+    }
+  }
+
+  function reconnect(id, side, target) {
+    const link = board().links.find(item => item.id === id);
+    if (!link || !target || wires.same(link[side], target)) return false;
+    return change(active => { active.links.find(item => item.id === id)[side] = target; },
+      () => choose([], id));
+  }
+
+  function reverse(id) {
+    return change(active => {
+      const link = active.links.find(item => item.id === id);
+      [link.from, link.to] = [link.to, link.from];
+      if (link.waypoints) link.waypoints.reverse();
+    });
+  }
+
+  function choosePort(ref) {
+    if (!ref) return;
+    if (state.connect) addLink(state.connect, ref);
+    else {
+      setTool('link');
+      state.connect = ref;
+      choose([ref.objectId]);
+      updateSelection();
     }
   }
 
@@ -943,6 +1093,16 @@
     closeFind,
     selectAll() { choose(currentScene.objects.map(object => object.id)); updateSelection(); },
     duplicate,
+    branchLeft: () => addBranch(selectedBranch()?.id, false, 'left'),
+    branchRight: () => addBranch(selectedBranch()?.id, false, 'right'),
+    branchSibling: () => addBranch(selectedBranch()?.id, true),
+    branchFold() {
+      const branch = selectedBranch();
+      if (!branch) return false;
+      return change(active => { active.objects.find(item => item.id === branch.id).folded = !branch.folded; });
+    },
+    flowRight: () => change(active => structure.arrangeFlow(active, state.ids, 'horizontal', currentScene.byId)),
+    flowDown: () => change(active => structure.arrangeFlow(active, state.ids, 'vertical', currentScene.byId)),
     group: () => groupSelection(),
     ungroup: () => groupSelection(true),
     front: () => change(active => layout.order(active, state.ids, 'front')),
@@ -1001,6 +1161,29 @@
       startGesture(event, 'pan');
       return;
     }
+    if (state.tool === 'select' || state.tool === 'link') {
+      const port = event.target.closest('[data-port-object]');
+      const endpoint = event.target.closest('[data-wire-end]')?.dataset.wireEnd;
+      const bend = event.target.closest('[data-bend]')?.dataset.bend;
+      const link = board().links.find(item => item.id === state.edge);
+      if (link && bend !== undefined) {
+        const edge = currentScene.edges.find(item => item.id === link.id);
+        if (!edge?.bends[Number(bend)] || !finishEdit()) return;
+        event.preventDefault();
+        viewport.focus({ preventScroll: true });
+        startGesture(event, 'bend', { edgeId: edge.id, index: Number(bend), points: copy(edge.bends) });
+        return;
+      }
+      const fixed = link && endpoint ? link[endpoint === 'from' ? 'to' : 'from'] : wires.reference(port, currentScene);
+      if (fixed) {
+        if (!finishEdit()) return;
+        event.preventDefault();
+        viewport.focus({ preventScroll: true });
+        startGesture(event, 'wire', { fixed, endpoint, edgeId: endpoint && link?.id, pointer: xy(event) });
+        renderWireControls();
+        return;
+      }
+    }
     const corner = event.target.closest('[data-corner]')?.dataset.corner;
     if (corner && state.tool === 'select' && state.ids.size === 1) {
       const id = [...state.ids][0];
@@ -1012,16 +1195,14 @@
     }
     const edge = event.target.closest('[data-edge]')?.dataset.edge;
     const object = event.target.closest('[data-object]')?.dataset.object;
-    if (state.tool === 'draw') {
+    if (state.tool === 'draw' || state.tool === 'erase') {
       event.preventDefault();
-      startGesture(event, 'stroke', { points: [xy(event)] });
-    } else if (state.tool === 'link' && object) {
-      if (state.connect) addLink(state.connect, object);
-      else {
-        state.connect = object;
-        choose([object]);
-        updateSelection();
-      }
+      viewport.focus({ preventScroll: true });
+      startGesture(event, state.tool === 'draw' ? 'stroke' : 'erase',
+        { points: [xy(event)], radius: 9 / board().view.zoom });
+      renderDiagram();
+    } else if (state.tool === 'link' && wires.eligible(currentScene.byId.get(object))) {
+      choosePort(wires.endpoint(object));
     } else if (['text', 'note', 'shape', 'branch', 'group'].includes(state.tool)) {
       event.preventDefault();
       addObject(state.tool, xy(event));
@@ -1051,11 +1232,33 @@
 
   viewport.addEventListener('pointermove', event => {
     const drag = state.gesture;
-    if (!drag || event.pointerId !== drag.id) return;
-    if (drag.kind === 'stroke') {
+    if (!drag) {
+      if (!currentScene || state.edit || !['select', 'link'].includes(state.tool)) return;
+      const hovered = wires.reference(event.target, currentScene)?.objectId || null;
+      if (hovered !== state.hoverPort) {
+        state.hoverPort = hovered;
+        renderWireControls();
+      }
+      return;
+    }
+    if (event.pointerId !== drag.id) return;
+    if (drag.kind === 'wire') {
+      drag.pointer = xy(event);
+      drag.moving ||= Math.hypot(event.clientX - drag.start[0], event.clientY - drag.start[1]) >= 4;
+      drag.target = wires.target(event, currentScene, viewport);
+      renderWireControls();
+    } else if (drag.kind === 'bend') {
+      drag.moving ||= Math.hypot(event.clientX - drag.start[0], event.clientY - drag.start[1]) >= 2;
+      if (!drag.moving) return;
+      drag.points[drag.index] = xy(event);
+      currentScene = geometry.scene(displayBoard());
+      renderDiagram();
+      renderWireControls();
+    } else if (drag.kind === 'stroke' || drag.kind === 'erase') {
       const next = xy(event);
       const previous = drag.points.at(-1);
-      if (drag.points.length < 25000 && Math.hypot(next[0] - previous[0], next[1] - previous[1]) >= 1) drag.points.push(next);
+      if (drag.points.length < 25000
+          && Math.hypot(next[0] - previous[0], next[1] - previous[1]) >= .75 / board().view.zoom) drag.points.push(next);
       renderDiagram();
     } else if (drag.kind === 'marquee') {
       const point = xy(event);
@@ -1098,6 +1301,17 @@
     state.gesture = null;
     viewport.dataset.panning = 'false';
     if (viewport.hasPointerCapture(drag.id)) viewport.releasePointerCapture(drag.id);
+    if (drag.kind === 'wire') {
+      state.hoverPort = null;
+      renderWireControls();
+      if (!commit) return;
+      if (!drag.moving && !drag.edgeId) choosePort(drag.fixed);
+      else if (drag.moving && drag.target) {
+        if (drag.edgeId) reconnect(drag.edgeId, drag.endpoint, drag.target);
+        else addLink(drag.fixed, drag.target);
+      }
+      return;
+    }
     if (drag.kind === 'marquee') {
       shown('#marquee', false);
       if (!commit) choose(drag.preserve);
@@ -1112,7 +1326,9 @@
       return;
     }
     renderGuides();
-    if (commit && drag.kind === 'move' && (drag.dx || drag.dy)) {
+    if (commit && drag.kind === 'bend' && drag.moving) {
+      if (change(active => { active.links.find(link => link.id === drag.edgeId).waypoints = drag.points; })) return;
+    } else if (commit && drag.kind === 'move' && (drag.dx || drag.dy)) {
       if (change(active => layout.move(active, drag.ids, drag.dx, drag.dy))) return;
     } else if (commit && drag.kind === 'resize' && (drag.dx || drag.dy)) {
       if (change(active => {
@@ -1124,17 +1340,27 @@
       withView({ ...view, x: view.x + drag.dx, y: view.y + drag.dy });
       return;
     } else if (commit && drag.kind === 'stroke') {
-      const xs = drag.points.map(point => point[0]);
-      const ys = drag.points.map(point => point[1]);
-      const x = Math.min(...xs) - 3, y = Math.min(...ys) - 3;
-      const object = { ...freshObject('stroke', [x, y]), width: Math.max(...xs) - x + 3,
-        height: Math.max(...ys) - y + 3, points: drag.points.map(point => [point[0] - x, point[1] - y]) };
-      if (change(active => active.objects.push(object), () => choose([object.id]))) return;
+      let object;
+      if (change(active => { object = ink.createStroke(drag.points); active.objects.push(object); },
+        () => choose([object.id]))) return;
+    } else if (commit && drag.kind === 'erase') {
+      $('#stroke-preview').replaceChildren();
+      if (change(active => { ink.erase(active, drag.points, drag.radius); })) return;
     }
     renderWorld();
   }
 
-  viewport.addEventListener('pointerup', event => { if (event.pointerId === state.gesture?.id) finishGesture(true); });
+  viewport.addEventListener('pointerup', event => {
+    if (event.pointerId !== state.gesture?.id) return;
+    if (state.gesture.kind === 'wire') state.gesture.target = wires.target(event, currentScene, viewport);
+    finishGesture(true);
+  });
+  viewport.addEventListener('pointerleave', () => {
+    if (!state.gesture && state.hoverPort) {
+      state.hoverPort = null;
+      renderWireControls();
+    }
+  });
   viewport.addEventListener('pointercancel', () => finishGesture(false));
   viewport.addEventListener('lostpointercapture', () => finishGesture(false));
   viewport.addEventListener('dblclick', event => {
@@ -1154,7 +1380,7 @@
     withView({ ...view, x: view.x - event.deltaX * units, y: view.y - event.deltaY * units });
   }, { passive: false });
 
-  editor.addEventListener('blur', () => finishEdit());
+  editor.addEventListener('blur', () => finishEdit(false, false));
   editor.addEventListener('input', () => {
     editor.style.height = '0px';
     editor.style.height = Math.min(360, Math.max(55, editor.scrollHeight + 2)) + 'px';
@@ -1202,10 +1428,12 @@
     } else if (command && !typing && ['a', 'd', 'g'].includes(key)) {
       event.preventDefault();
       void perform({ a: 'selectAll', d: 'duplicate', g: event.shiftKey ? 'ungroup' : 'group' }[key]);
+    } else if (event.key === 'Escape' && state.gesture) {
+      finishGesture(false);
+      setTool('select');
     } else if (event.key === 'Escape' && !$('#find-panel').hidden) {
       closeFind();
-    } else if (event.key === 'Escape' && (state.gesture || state.tool !== 'select')) {
-      finishGesture(false);
+    } else if (event.key === 'Escape' && state.tool !== 'select') {
       setTool('select');
     } else if (!typing && viewport.contains(event.target)) {
       if (event.code === 'Space') {
@@ -1217,6 +1445,28 @@
       } else if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
         deleteSelection();
+      } else if (event.key.startsWith('Arrow') && event.target.dataset.bend !== undefined) {
+        const step = event.shiftKey ? 10 : 1;
+        const offsets = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+        const edge = currentScene.edges.find(link => link.id === state.edge);
+        const index = Number(event.target.dataset.bend);
+        if (edge?.bends[index] && offsets[event.key]) {
+          const points = copy(edge.bends);
+          const [dx, dy] = offsets[event.key];
+          points[index] = [points[index][0] + dx, points[index][1] + dy];
+          event.preventDefault();
+          change(active => { active.links.find(link => link.id === edge.id).waypoints = points; });
+        }
+      } else if (event.altKey && event.key.startsWith('Arrow') && selectedBranch()) {
+        const directions = { ArrowLeft: 'parent', ArrowRight: 'child', ArrowUp: 'previous', ArrowDown: 'next' };
+        const id = structure.traverse(board(), selectedBranch().id, directions[event.key]);
+        event.preventDefault();
+        if (id) {
+          choose([id]);
+          updateSelection();
+          revealObject(id);
+          objectID(id)?.focus({ preventScroll: true });
+        }
       } else if (event.key.startsWith('Arrow') && state.ids.size) {
         const step = event.shiftKey ? 10 : 1;
         const movement = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
@@ -1259,10 +1509,11 @@
       setTool('shape');
     }
     else if (control.dataset.tool && finishEdit()) setTool(control.dataset.tool);
+    else if (event.detail === 0 && control.dataset.portObject) choosePort(wires.reference(control, currentScene));
     else if (event.detail === 0 && control.dataset.object) {
-      if (state.tool === 'link' && state.connect) addLink(state.connect, control.dataset.object);
+      const ref = wires.reference(control, currentScene);
+      if (state.tool === 'link' && ref) choosePort(ref);
       else {
-        if (state.tool === 'link') state.connect = control.dataset.object;
         choose([control.dataset.object]);
         updateSelection();
       }

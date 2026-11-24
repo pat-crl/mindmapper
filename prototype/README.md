@@ -4,17 +4,25 @@
 
 Run `prototype/mac/build.sh` from the project. Double-click the resulting `builds/mindmapper-prototype/Mind Mapper Prototype.app`. The build targets macOS 14.5 or later and is ad-hoc signed for local development.
 
-The prototype opens on a blank board. **Start from template** adds a mind map, flowchart or signal flow. **Example board** combines a signal chain, a mind map, a note and a stroke. The previous 0.1.0 workspace reopens in the 0.1.1 build with its existing rounded blocks.
+The prototype opens on a blank board. **Start from template** adds a mind map, flowchart or signal flow. **Example board** combines a signal chain, a mind map, a note and a stroke. The 0.1.2 build reopens workspaces created by the previous prototypes.
 
 ## Everyday canvas
 
 - Add text, notes, blocks, decisions, circles, lines and frames. Double-click to edit text, use the corner handles to resize, and use Inspector for size, style, notes and sources. In branch text, Tab adds a child, Return adds a sibling and Shift-Tab returns to the parent.
 - Shift-click or drag a marquee to select several objects. Use the arrow keys to nudge a selection or Shift-arrow for a larger step. Arrange in Inspector or the Mac menu to align, distribute, move forward or backward, and group in a frame. Drag a frame by its title to move its contents. The Inspector lock keeps an object in place during movement.
 - Copy and paste selections within or across boards. The Mac clipboard carries fresh copies of objects and their internal connections on paste, and also provides readable text to other apps. Use Paste Outline to create branches from indented text. Copy Markdown and Copy Rich Text work with mind map branches.
-- Use **Connect** to choose two objects, then edit the label and ports in Inspector. Drawing, resizing, moving a selection and arranging a branch each commit a single undoable change.
+- Drawing, resizing, moving a selection, arranging a flow or branch and editing a connector each commit a single undoable change.
 - Pan with two-finger scroll or Space-drag. Pinch or use modifier-scroll to zoom around the pointer. Fit, Fit selection and Centre work independently of undo. Grid and object snapping are separate toggles. Hold Option to move freely during a drag.
 - Find a board from the sidebar or search within a board for text, connector labels, notes and sources. Choosing a result can reveal a folded branch. Rename in the title bar, duplicate from the library, or delete with the confirmation and undo in the editing session.
 - Import adds separate boards. Export writes an editable board or a scalable SVG.
+
+## Mind maps, flows and sketches
+
+- Select a branch for **Left child**, **Right child**, **Sibling** and **Fold**. Option-arrow moves between parent, child and siblings. Change **Branch parent** in Inspector to attach a subtree elsewhere without changing its position. Use **Arrange branch** when you want to reflow that tree.
+- Hover over a block or select it to see its ports. Drag from a port to another object or port, or choose **Connect to** in Inspector. Select a wire to move either end, reverse it, edit its labels and arrowheads, or set fixed ports.
+- Drag an elbow handle to pin a bend in board coordinates. Arrow keys nudge a focused bend handle. **Reset automatic route** restores routing around nearby boxes. Parallel feedback wires separate automatically. A **Junction** joins wires that share its dot. Wires that simply cross keep their own endpoints.
+- Select flow objects and use **Arrange Flow Left to Right** or **Arrange Flow Top to Bottom**. Both work through Undo and leave the rest of the board where it is.
+- Draw with a pointer, select strokes on their line, or sweep **Erase** across part of a stroke. The remaining parts can still be moved and exported. Escape cancels a wire drag, bend edit or drawing gesture.
 
 The app uses its own `~/Library/Application Support/Mind Mapper Prototype` folder. The previous workspace sits beside the current one. For an isolated run, set `MINDMAPPER_PROTOTYPE_DATA_DIR` to a scratch directory before launching the executable. The same editor can be opened from `prototype/index.html` in a local browser, where it uses a separate prototype storage key.
 
@@ -33,7 +41,7 @@ Import uses the unchanged 0.1.6 model to read legacy schema versions 1–4. It c
 ## Verification
 
 ```sh
-node --test prototype/tests/model.test.cjs
+node --test prototype/tests/*.test.cjs
 prototype/mac/build.sh
 prototype/mac/check.sh
 ```
@@ -49,6 +57,8 @@ NODE_PATH="$test_deps/node_modules" node prototype/tests/browser.cjs /path/to/le
 ```
 
 The native checks run on the installed macOS and WebKit. Test the earliest supported system and document-app SVG import during release verification. Image and external file attachments remain future work.
+
+Chrome pointer checks cover port-to-port drags, reconnection, pinned and cancelled bends, drawing, splitting a stroke and restoring it with Undo. The geometry checks also cover parallel connections, orthogonal detours and junctions. A physical trackpad feel check belongs in release testing.
 
 The 250-object Phase 1 fixture with 24 extra links opened and fit in Chrome. Across 24 drag events at 1440 × 900, the synchronous handler took a median of 7.3 ms and a maximum of 11.6 ms on this Mac. The measurement excludes browser paint and display time. This is enough evidence to continue with DOM text and SVG geometry and measure full frame timing as the canvas grows.
 

@@ -45,6 +45,7 @@ test('starter boards have fresh identities, valid contents, and distinct use cas
   assert.ok(starters[1].objects.some(item => item.shape === 'decision'));
   assert.ok(starters[1].links.some(link => link.label === 'No'));
   assert.ok(starters[2].objects.some(item => item.type === 'note'));
+  assert.ok(starters[2].objects.some(item => item.shape === 'junction'));
   assert.ok(starters[2].links.some(link => link.label === 'Return' && link.style.dashed));
   for (const starter of starters) assert.deepEqual(Board.validateBoard(starter), starter);
   assert.equal(Board.emptyBoard().objects.length, 0);

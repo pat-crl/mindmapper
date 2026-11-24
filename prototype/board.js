@@ -6,9 +6,10 @@
   const WORKSPACE = 'mindmapper.workspace';
   const SCHEMA = 1;
   const MAX_BYTES = legacyModel.MAX_LIBRARY_BYTES;
+  const MAX_WAYPOINTS = 64;
   const uid = legacyModel.uid;
   const TYPES = ['text', 'note', 'shape', 'branch', 'stroke', 'group'];
-  const SHAPES = ['rectangle', 'rounded', 'decision', 'circle', 'line'];
+  const SHAPES = ['rectangle', 'rounded', 'decision', 'circle', 'line', 'junction'];
   const PORTS = ['auto', 'left', 'right', 'top', 'bottom'];
   const ROUTES = ['straight', 'curve', 'elbow'];
   const ARROWS = ['none', 'start', 'end', 'both'];
@@ -209,10 +210,18 @@
     }
     const links = list(input.links, 6000, 'Connectors').map(record => {
       object(record, 'Connector');
-      return {
+      const link = {
         id: unique(record.id, 'Connector'), from: endpoint(record.from), to: endpoint(record.to),
         label: text(record.label, 500, 'Connector label'), style: linkStyle(record.style),
       };
+      if (record.waypoints !== undefined) {
+        const points = list(record.waypoints, MAX_WAYPOINTS, 'Connector waypoints').map(point => {
+          if (!Array.isArray(point) || point.length !== 2) throw new Error('A waypoint must contain x and y.');
+          return [number(point[0], -4e6, 4e6, 'Waypoint x'), number(point[1], -4e6, 4e6, 'Waypoint y')];
+        });
+        if (points.length) link.waypoints = points;
+      }
+      return link;
     });
     const board = {
       format: BOARD, version: SCHEMA, id: identity(input.id, 'Board'),
@@ -250,7 +259,7 @@
       text: [200, 46], note: [184, 86], shape: [150, 50],
       branch: [150, 46], group: [286, 185], stroke: [46, 46],
     };
-    const shapeSizes = { decision: [144, 92], circle: [96, 96], line: [144, 1] };
+    const shapeSizes = { decision: [144, 92], circle: [96, 96], line: [144, 1], junction: [12, 12] };
     const [width, height] = (type === 'shape' && own(shapeSizes, options.shape) ? shapeSizes[options.shape] : sizes[type]);
     const defaults = type === 'stroke' ? { points: [[0, 0]] } : {};
     return boardObject({ id: uid(), width, height, ...defaults, ...options, type, x, y });
@@ -289,16 +298,22 @@
     },
     signal() {
       const board = emptyBoard('Signal flow');
-      const frame = createObject('group', [-420, -112], { width: 840, height: 247, text: 'Signal path' });
+      const frame = createObject('group', [-420, -112], { width: 840, height: 282, text: 'Signal path' });
       const allow = { shape: 'rectangle', groupId: frame.id };
       const source = createObject('shape', [-390, -25], { ...allow, text: 'Source' });
       const processor = createObject('shape', [-75, -25], { ...allow, text: 'Processing' });
       const output = createObject('shape', [240, -25], { ...allow, text: 'Output' });
-      const note = createObject('note', [-75, 164], { text: 'Patch notes' });
-      board.objects = [frame, source, processor, output, note];
+      const split = createObject('shape', [150, -6], { ...allow, shape: 'junction' });
+      const meter = createObject('shape', [240, 93], { ...allow, text: 'Meter' });
+      const note = createObject('note', [-75, 198], { text: 'Patch notes' });
+      const send = starterConnector(processor, 'right', split, 'auto', 'Send');
+      send.style.arrow = 'none';
+      board.objects = [frame, source, processor, output, split, meter, note];
       board.links = [
         starterConnector(source, 'right', processor, 'left', 'Input'),
-        starterConnector(processor, 'right', output, 'left', 'Send'),
+        send,
+        starterConnector(split, 'right', output, 'left'),
+        starterConnector(split, 'bottom', meter, 'left'),
         starterConnector(output, 'bottom', processor, 'bottom', 'Return', true),
       ];
       return board;
@@ -542,17 +557,19 @@
     }
     for (const edge of [...board.links]) {
       if (!mapping.has(edge.from.objectId) || !mapping.has(edge.to.objectId)) continue;
-      board.links.push({
+      const copy = {
         ...legacyModel.clone(edge), id: uid(),
         from: { ...edge.from, objectId: mapping.get(edge.from.objectId) },
         to: { ...edge.to, objectId: mapping.get(edge.to.objectId) },
-      });
+      };
+      if (edge.waypoints) copy.waypoints = edge.waypoints.map(([x, y]) => [x + offset, y + offset]);
+      board.links.push(copy);
     }
     return mapping.get(id);
   }
 
   const api = {
-    SCHEMA, BOARD, WORKSPACE, MAX_BYTES, SHAPES, uid, emptyBoard, exampleBoard, createWorkspace, createObject, starterBoard,
+    SCHEMA, BOARD, WORKSPACE, MAX_BYTES, MAX_WAYPOINTS, SHAPES, uid, emptyBoard, exampleBoard, createWorkspace, createObject, starterBoard,
     validateBoard, validateWorkspace, importDocument, addImportedBoards,
     descendants, visibleObjects, relayoutBranch, moveObjects, detachBranch, deleteObjects, duplicateBranch,
   };

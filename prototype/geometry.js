@@ -46,15 +46,16 @@ const BoardGeometry = (() => {
     const lineHeight = size * 1.25;
     const shape = object.type === 'shape' ? (object.shape || 'rounded') : null;
     const insetRatio = shape === 'decision' ? .5 : shape === 'circle' ? .68 : 1;
-    const nominalWidth = shape === 'circle' ? Math.max(object.width, object.height) : object.width;
+    const circular = shape === 'circle' || shape === 'junction';
+    const nominalWidth = circular ? Math.max(object.width, object.height) : object.width;
     const padding = insetRatio < 1 ? 8 : 22;
     const textWidth = Math.max(8, nominalWidth * insetRatio - padding);
-    const lines = object.type === 'stroke' || shape === 'line'
+    const lines = object.type === 'stroke' || shape === 'line' || shape === 'junction'
       ? [] : linesFor(object.text, textWidth, size, object.style);
     const textHeight = lines.length * lineHeight;
     const minimumHeight = lines.length ? textHeight / insetRatio + 16 : 0;
-    const height = Math.max(object.height, minimumHeight, shape === 'circle' ? nominalWidth : 0);
-    const width = shape === 'circle' ? height : object.width;
+    const height = Math.max(object.height, minimumHeight, circular ? nominalWidth : 0);
+    const width = circular ? height : object.width;
     const textAlign = insetRatio === 1 ? 'left' : 'center';
     const textInset = textAlign === 'center' ? Math.max(0, (width - textWidth) / 2) : 11;
     const textPosition = object.type === 'group' || object.type === 'note' ? 'start' : 'center';
@@ -82,10 +83,14 @@ const BoardGeometry = (() => {
     const dy = oy - cy;
     const facing = Math.abs(dx) / rect.width >= Math.abs(dy) / rect.height
       ? (dx >= 0 ? 'right' : 'left') : (dy >= 0 ? 'bottom' : 'top');
+    const port = side && side !== 'auto' ? side : facing;
+    if (rect.shape === 'junction') {
+      const vectors = { left: [-1, 0], right: [1, 0], top: [0, -1], bottom: [0, 1] };
+      return [cx, cy, ...(vectors[port] || vectors[facing])];
+    }
     if (rect.type === 'shape' && rect.shape === 'line') {
       const [start, finish] = lineEnds(rect);
-      const sideOfLine = side === 'auto' ? facing : side;
-      const startsHere = sideOfLine === 'left' || sideOfLine === (rect.lineDirection === 'up' ? 'bottom' : 'top');
+      const startsHere = port === 'left' || port === (rect.lineDirection === 'up' ? 'bottom' : 'top');
       const [x, y] = startsHere ? start : finish;
       const vx = finish[0] - start[0], vy = finish[1] - start[1];
       const distance = Math.hypot(vx, vy);
@@ -98,7 +103,11 @@ const BoardGeometry = (() => {
       top: [cx, rect.y, 0, -1],
       bottom: [cx, rect.y + rect.height, 0, 1],
     };
-    return ports[side === 'auto' ? facing : side] || ports[facing];
+    return ports[port] || ports[facing];
+  }
+
+  function portPoint(rect, side, other = rect) {
+    return endpoint(rect, side, other).slice(0, 2);
   }
 
   function pointOn(a, amount) {
@@ -117,41 +126,216 @@ const BoardGeometry = (() => {
     return [end.slice(0, 2), [x - uy * 4, y + ux * 4], [x + uy * 4, y - ux * 4]];
   }
 
-  function connection(record, from, to) {
+  const samePoint = (a, b) => a[0] === b[0] && a[1] === b[1];
+  const segmentLength = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
+
+  function simplify(points) {
+    const result = [];
+    for (const point of points) {
+      const b = result.at(-1);
+      if (b && samePoint(point, b)) continue;
+      const a = result.at(-2);
+      // Collapse only a continuous straight run, keeping deliberate reversals.
+      if (a && [0, 1].some(axis => a[axis] === b[axis] && b[axis] === point[axis]
+          && (b[1 - axis] - a[1 - axis]) * (point[1 - axis] - b[1 - axis]) > 0)) {
+        result.pop();
+      }
+      result.push(point);
+    }
+    return result;
+  }
+
+  function halfWay(points) {
+    const lengths = points.slice(1).map((point, i) => segmentLength(points[i], point));
+    let remaining = lengths.reduce((total, length) => total + length, 0) / 2;
+    for (const [i, length] of lengths.entries()) {
+      if (length && remaining <= length) {
+        return points[i].map((value, axis) => value + (points[i + 1][axis] - value) * remaining / length);
+      }
+      remaining -= length;
+    }
+    return points[0];
+  }
+
+  function obstacleLookup(objects) {
+    const cell = 224;
+    const boxes = [];
+    const large = [];
+    const cells = new Map();
+    function range({ left, right, top, bottom }) {
+      return [Math.floor(left / cell), Math.floor(right / cell), Math.floor(top / cell), Math.floor(bottom / cell)];
+    }
+    function visit([left, right, top, bottom], callback) {
+      for (let x = left; x <= right; x++) {
+        for (let y = top; y <= bottom; y++) callback(x + ':' + y);
+      }
+    }
+    const covered = ([left, right, top, bottom]) => (right - left + 1) * (bottom - top + 1);
+    for (const object of objects) {
+      if (object.type === 'group' || object.type === 'stroke' || ['line', 'junction'].includes(object.shape)) continue;
+      const bounds = {
+        left: object.x - 7, right: object.x + object.width + 7,
+        top: object.y - 7, bottom: object.y + object.height + 7,
+      };
+      boxes.push(bounds);
+      const tiles = range(bounds);
+      if (covered(tiles) > 100) large.push(bounds);
+      else visit(tiles, key => {
+        if (!cells.has(key)) cells.set(key, []);
+        cells.get(key).push(bounds);
+      });
+    }
+    return (a, b) => {
+      const left = Math.min(a[0], b[0]), right = Math.max(a[0], b[0]);
+      const top = Math.min(a[1], b[1]), bottom = Math.max(a[1], b[1]);
+      const tiles = range({ left, right, top, bottom });
+      let possible = boxes;
+      if (covered(tiles) <= 100) {
+        const candidates = new Set(large);
+        visit(tiles, key => {
+          for (const item of cells.get(key) || []) candidates.add(item);
+        });
+        possible = [...candidates];
+      }
+      return possible.filter(box => left < box.right && right > box.left && top < box.bottom && bottom > box.top);
+    };
+  }
+
+  function axisLead(endpoint, amount) {
+    const [x, y, dx, dy] = endpoint;
+    return Math.abs(dx) >= Math.abs(dy) ? [x + Math.sign(dx) * amount, y] : [x, y + Math.sign(dy) * amount];
+  }
+
+  function orthogonal(a, b, horizontalFirst) {
+    return horizontalFirst ? [b[0], a[1]] : [a[0], b[1]];
+  }
+
+  function pointRoute(a, b, waypoints) {
+    const leadA = axisLead(a, 14);
+    const leadB = axisLead(b, 14);
+    const points = [a.slice(0, 2), leadA];
+    let previous = leadA;
+    let horizontal = Math.abs(a[2]) >= Math.abs(a[3]);
+    for (const point of [...waypoints, leadB]) {
+      const corner = orthogonal(previous, point, horizontal);
+      points.push(corner, point);
+      if (!samePoint(previous, point)) {
+        const last = samePoint(point, corner) ? previous : corner;
+        horizontal = last[1] === point[1];
+      }
+      previous = point;
+    }
+    points.push(b.slice(0, 2));
+    return simplify(points);
+  }
+
+  function elbowRoute(a, b, lane, blockers) {
+    const first = axisLead(a, 14);
+    const last = axisLead(b, 14);
+    if (samePoint(a, b) && samePoint(first, last)) {
+      const straight = axisLead(a, 44 + Math.abs(lane));
+      const dx = first[0] - a[0], dy = first[1] - a[1];
+      const side = lane < 0 ? -2 : 2;
+      const corner = ([x, y]) => [x - dy * side, y + dx * side];
+      return simplify([a.slice(0, 2), first, straight, corner(straight), corner(first), first, b.slice(0, 2)]);
+    }
+    const horizontalA = first[1] === a[1];
+    const horizontalB = last[1] === b[1];
+    const midX = (first[0] + last[0]) / 2;
+    const midY = (first[1] + last[1]) / 2;
+    const across = x => simplify([first, [x, first[1]], [x, last[1]], last]);
+    const down = y => simplify([first, [first[0], y], [last[0], y], last]);
+    let preferred;
+    if (lane && first[1] === last[1]) preferred = down(midY + lane);
+    else if (lane && first[0] === last[0]) preferred = across(midX + lane);
+    else if (horizontalA && horizontalB) preferred = across(midX + lane);
+    else if (!horizontalA && !horizontalB) preferred = down(midY + lane);
+    else if (lane) preferred = horizontalA ? down(midY + lane) : across(midX + lane);
+    else preferred = simplify([first, orthogonal(first, last, horizontalA), last]);
+
+    if (blockers) {
+      function hits(route) {
+        const found = new Set();
+        for (let i = 1; i < route.length; i++) {
+          for (const box of blockers(route[i - 1], route[i])) found.add(box);
+        }
+        return found;
+      }
+      const initialHits = hits(preferred);
+      if (initialHits.size) {
+        const bounds = [...initialHits].reduce((area, item) => ({
+          left: Math.min(area.left, item.left), right: Math.max(area.right, item.right),
+          top: Math.min(area.top, item.top), bottom: Math.max(area.bottom, item.bottom),
+        }));
+        // A negative and positive lane can both choose the same side of a blocker.
+        // Keep their clearances distinct so detouring does not merge those wires.
+        const gap = 6 + Math.abs(lane) + (lane < 0 ? 7 : 0);
+        const candidates = [
+          across(bounds.left - gap), across(bounds.right + gap),
+          down(bounds.top - gap), down(bounds.bottom + gap),
+        ];
+        if (!lane) candidates.push(across(midX), down(midY));
+        function cost(route, count) {
+          return count * 1e8 + route.slice(1).reduce((distance, point, i) => distance + segmentLength(route[i], point), 0);
+        }
+        let best = cost(preferred, initialHits.size);
+        for (const route of candidates) {
+          const score = cost(route, hits(route).size);
+          if (score < best) {
+            preferred = route;
+            best = score;
+          }
+        }
+      }
+    }
+    return simplify([a.slice(0, 2), ...preferred, b.slice(0, 2)]);
+  }
+
+  function connection(record, from, to, lane, blockers) {
     const self = from.id === to.id;
     const a = endpoint(from, self && record.from.port === 'auto' ? 'right' : record.from.port, to);
     const b = endpoint(to, self && record.to.port === 'auto' ? 'top' : record.to.port, from);
-    const distance = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const point = value => value.slice(0, 2).join(' ');
-    const label = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 8];
+    const fromPoint = a.slice(0, 2);
+    const toPoint = b.slice(0, 2);
+    const distance = segmentLength(a, b);
+    const directedLane = record.from.objectId > record.to.objectId ? -lane : lane;
+    const offset = [distance ? (a[1] - b[1]) * directedLane / distance : lane, distance ? (b[0] - a[0]) * directedLane / distance : -lane];
     const style = record.style;
-    let path = 'M' + point(a) + ' L' + point(b);
-    let turns = [];
-    if (self || style.route === 'curve') {
+    const waypoints = record.waypoints || [];
+    let points = [fromPoint, toPoint];
+    let label;
+    let bends = [];
+    let path;
+    if (style.route === 'elbow') {
+      points = waypoints.length ? pointRoute(a, b, waypoints) : elbowRoute(a, b, lane, blockers);
+      bends = waypoints.length ? waypoints : points.slice(1, -1).filter(point => !samePoint(point, fromPoint) && !samePoint(point, toPoint));
+      label = halfWay(points);
+    } else if (self || style.route === 'curve') {
       const lead = self ? Math.max(from.width, from.height) * .75 + 24 : Math.max(18, distance * .42);
-      turns = [pointOn(a, lead), pointOn(b, lead)];
-      path = 'M' + point(a) + ' C' + turns.map(point).join(' ') + ' ' + point(b);
-      label[0] = (a[0] + 3 * turns[0][0] + 3 * turns[1][0] + b[0]) / 8;
-      label[1] = (a[1] + 3 * turns[0][1] + 3 * turns[1][1] + b[1]) / 8 - 8;
-    } else if (style.route === 'elbow') {
-      const lead = Math.max(5, Math.min(14, distance / 4));
-      const first = pointOn(a, lead);
-      const last = pointOn(b, lead);
-      if (a[2] && b[2]) {
-        const middle = (first[0] + last[0]) / 2;
-        turns = [first, [middle, first[1]], [middle, last[1]], last];
-      } else if (a[3] && b[3]) {
-        const middle = (first[1] + last[1]) / 2;
-        turns = [first, [first[0], middle], [last[0], middle], last];
-      } else {
-        turns = [first, a[2] ? [last[0], first[1]] : [first[0], last[1]], last];
+      const first = pointOn(a, lead).map((value, i) => value + offset[i]);
+      const last = pointOn(b, lead).map((value, i) => value + offset[i]);
+      if (samePoint(first, last) && samePoint(a, b)) {
+        first[0] -= a[3] * lead;
+        first[1] += a[2] * lead;
+        last[0] += b[3] * lead;
+        last[1] -= b[2] * lead;
       }
-      path = 'M' + [a, ...turns, b].map(point).join(' L');
+      points = [fromPoint, first, last, toPoint];
+      path = 'M' + fromPoint.join(' ') + ' C' + [first, last, toPoint].map(point => point.join(' ')).join(' ');
+      label = [0, 1].map(i => (a[i] + 3 * first[i] + 3 * last[i] + b[i]) / 8);
+    } else if (lane) {
+      // Shared fixed ports fan short end runs out to distinct parallel straight runs.
+      const at = ratio => [0, 1].map(i => a[i] + (b[i] - a[i]) * ratio + offset[i]);
+      points = simplify([fromPoint, at(.24), at(.76), toPoint]);
+      label = halfWay(points);
     }
+    path ||= 'M' + points.map(point => point.join(' ')).join(' L');
+    label ||= halfWay(points);
     const arrows = [];
-    if (style.arrow === 'end' || style.arrow === 'both') arrows.push(arrowAt(b, turns.at(-1) || a));
-    if (style.arrow === 'start' || style.arrow === 'both') arrows.push(arrowAt(a, turns[0] || b));
-    return { id: record.id, path, label, text: record.label, style, points: [a, ...turns, b], arrows };
+    if (style.arrow === 'end' || style.arrow === 'both') arrows.push(arrowAt(b, points.at(-2) || a));
+    if (style.arrow === 'start' || style.arrow === 'both') arrows.push(arrowAt(a, points[1] || b));
+    return { id: record.id, path, label: [label[0], label[1] - 8], text: record.label, style, points,
+      fromPoint, toPoint, waypoints, bends, arrows };
   }
 
   function strokePath(object) {
@@ -169,10 +353,21 @@ const BoardGeometry = (() => {
       from: { objectId: branch.parentId, port: branch.side === 'right' ? 'right' : 'left' },
       to: { objectId: branch.childId, port: branch.side === 'right' ? 'left' : 'right' },
     }));
+    const counters = new Map();
+    const lanes = new Map();
+    for (const link of board.links) {
+      if (!byId.has(link.from.objectId) || !byId.has(link.to.objectId)) continue;
+      const key = [link.from.objectId, link.to.objectId].sort().join(':');
+      const side = counters.get(key) || 0;
+      counters.set(key, side + 1);
+      lanes.set(link.id, Math.ceil(side / 2) * (side % 2 ? 1 : -1) * 14);
+    }
+    const blockers = board.links.some(link => link.style.route === 'elbow' && !link.waypoints?.length)
+      ? obstacleLookup(objects) : null;
     const edges = [...branches, ...board.links].flatMap(record => {
       const from = byId.get(record.from.objectId);
       const to = byId.get(record.to.objectId);
-      return from && to ? [connection(record, from, to)] : [];
+      return from && to ? [connection(record, from, to, lanes.get(record.id) || 0, record.parentId ? null : blockers)] : [];
     });
     return { objects, byId, edges };
   }
@@ -256,6 +451,10 @@ const BoardGeometry = (() => {
         [x + width / 2, y + height], [x, y + height / 2]];
       return '<polygon points="' + points.map(point => point.join(',')).join(' ') + '"' + paint + '/>';
     }
+    if (shape === 'junction') {
+      return '<circle cx="' + (x + width / 2) + '" cy="' + (y + height / 2) + '" r="'
+        + Math.min(width, height) / 2 + '" fill="' + safeColor(style.fill, colors.wire) + '"/>';
+    }
     if (shape === 'circle') {
       return '<circle cx="' + (x + width / 2) + '" cy="' + (y + height / 2)
         + '" r="' + Math.min(width, height) / 2 + '"' + paint + '/>';
@@ -294,5 +493,5 @@ const BoardGeometry = (() => {
       + objects.join('') + '</svg>';
   }
 
-  return { measure, box, textStyle, scene, bounds, palette, edgeMarkup, strokeMarkup, shapeMarkup, svg };
+  return { measure, box, textStyle, portPoint, scene, bounds, palette, edgeMarkup, strokeMarkup, shapeMarkup, svg };
 })();

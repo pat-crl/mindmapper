@@ -179,6 +179,13 @@ final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelega
         arrange.addItem(command("Ungroup Frame", action: "ungroup", key: "g", modifiers: [.command, .shift]))
         arrange.addItem(command("Bring to Front", action: "front"))
         arrange.addItem(command("Send to Back", action: "back"))
+        arrange.addItem(.separator())
+        arrange.addItem(command("Arrange Flow Left to Right", action: "flowRight"))
+        arrange.addItem(command("Arrange Flow Top to Bottom", action: "flowDown"))
+        arrange.addItem(.separator())
+        arrange.addItem(command("Add Left Child", action: "branchLeft"))
+        arrange.addItem(command("Add Right Child", action: "branchRight"))
+        arrange.addItem(command("Add Sibling", action: "branchSibling"))
 
         let view = menu("View")
         view.addItem(command("Fit Whole Board", action: "fit"))

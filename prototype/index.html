@@ -11,6 +11,9 @@
   <script defer src="geometry.js"></script>
   <script defer src="arrangement.js"></script>
   <script defer src="workflows.js"></script>
+  <script defer src="structure.js"></script>
+  <script defer src="ink.js"></script>
+  <script defer src="wire-controls.js"></script>
   <script defer src="workspace.js"></script>
 </head>
 <body>
@@ -56,9 +59,12 @@
           <svg id="diagram" aria-hidden="true"></svg>
           <div id="objects" aria-label="Board objects"></div>
           <svg id="stroke-preview" aria-hidden="true"></svg>
+          <svg id="wire-preview" aria-hidden="true"></svg>
           <div id="marquee" hidden></div>
           <div id="guides" aria-hidden="true"></div>
           <div id="handles"></div>
+          <div id="ports" aria-label="Connector ports"></div>
+          <div id="wire-handles" aria-label="Selected connector handles"></div>
           <textarea id="object-editor" aria-label="Object text" maxlength="20000" spellcheck="true" hidden></textarea>
         </div>
       </div>
@@ -79,11 +85,13 @@
           <button type="button" data-shape="decision">Decision</button>
           <button type="button" data-shape="circle">Circle</button>
           <button type="button" data-shape="line">Line</button>
+          <button type="button" data-shape="junction">Junction</button>
         </div>
         <button type="button" data-tool="group" aria-pressed="false" title="Place a frame">Frame</button>
         <button type="button" data-tool="branch" aria-pressed="false" title="Place a branch root">Branch</button>
         <button type="button" data-tool="link" aria-pressed="false" title="Select two objects to connect">Connect</button>
         <button type="button" data-tool="draw" aria-pressed="false" title="Draw a stroke">Draw</button>
+        <button type="button" data-tool="erase" aria-pressed="false" title="Erase parts of strokes">Erase</button>
         <button type="button" popovertarget="edit-menu">Edit</button>
         <div id="edit-menu" class="popup" popover>
           <button type="button" data-command="cut">Cut</button>
@@ -94,6 +102,12 @@
           <button type="button" data-command="copyMarkdown">Copy Markdown</button>
           <button type="button" data-command="copyRich">Copy rich text</button>
         </div>
+      </div>
+      <div id="branch-tools" class="floating" role="group" aria-label="Mind map branch actions" hidden>
+        <button type="button" data-command="branchLeft" title="Add a child on the left">Left child</button>
+        <button type="button" data-command="branchRight" title="Add a child on the right">Right child</button>
+        <button type="button" data-command="branchSibling">Sibling</button>
+        <button type="button" data-command="branchFold">Fold</button>
       </div>
       <div class="view floating" role="group" aria-label="Canvas view">
         <button type="button" data-command="zoomOut" aria-label="Zoom out">−</button>

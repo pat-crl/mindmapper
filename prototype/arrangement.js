@@ -112,6 +112,7 @@
     const links = selection.links.map(edge => ({
       ...edge, id: freshID(), from: { ...edge.from, objectId: mapping.get(edge.from.objectId) },
       to: { ...edge.to, objectId: mapping.get(edge.to.objectId) },
+      ...(edge.waypoints ? { waypoints: edge.waypoints.map(([x, y]) => [x + dx, y + dy]) } : {}),
     }));
     const destination = model.validateBoard({
       ...board, objects: [...board.objects, ...objects], branches: [...board.branches, ...branches],
