@@ -11,6 +11,7 @@
   const scale = element('scale');
   const save = element('save');
   const share = element('share');
+  const reveal = element('reveal');
   const formats = {
     svg: { extension: 'svg', mime: 'image/svg+xml' },
     pdf: { extension: 'pdf', mime: 'application/pdf' },
@@ -19,7 +20,7 @@
   };
   const pdfLimit = 14_400;
   const number = new Intl.NumberFormat();
-  let source, plan, previewURL, busy = false;
+  let source, plan, previewURL, savedId, busy = false;
 
   function fileName(title) {
     return title.replace(/[^\p{L}\p{N} ._-]/gu, '').replace(/ {2,}/g, ' ').trim().slice(0, 70) || 'Board';
@@ -36,11 +37,13 @@
     return true;
   }
 
-  function setStatus(message = '', error = false) {
+  function setStatus(message = '', error = false, id = null) {
     const label = element('status');
     label.textContent = message;
-    label.hidden = !message;
     label.dataset.error = String(error);
+    label.dataset.saved = String(Boolean(id));
+    savedId = id;
+    reveal.hidden = !id;
   }
 
   function clearPreview() {
@@ -150,7 +153,8 @@
       }
       if (action === 'share') setStatus('');
       else if (result == null) setStatus('Save cancelled.');
-      else setStatus(send ? 'Figure saved.' : 'Download started.');
+      else if (send) setStatus(`Saved to ${result.folder} · ${result.name}`, false, result.id);
+      else setStatus('Download started.');
     } catch (error) {
       setStatus(error.message || String(error), true);
     } finally {
@@ -177,6 +181,12 @@
   });
   element('close').addEventListener('click', () => dialog.close());
   share.addEventListener('click', () => void write('share'));
+  reveal.addEventListener('click', async () => {
+    if (!savedId) return;
+    const id = savedId;
+    try { await source.send('revealExport', { id }); }
+    catch (error) { if (savedId === id && dialog.open) setStatus(error.message || String(error), true); }
+  });
 
   window.BoardExportDialog = { open, download, fileName };
 })();

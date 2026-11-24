@@ -4,6 +4,7 @@ const BoardGeometry = (() => {
   const fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   // Use a named sans face first. Some document importers skip the list after an unavailable system font.
   const figureFontFamily = 'Arial, Liberation Sans, sans-serif';
+  const labelSize = 12;
   const context = document.createElement('canvas').getContext('2d');
   const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter() : null;
   function metrics(text, size, style = {}) {
@@ -424,7 +425,12 @@ const BoardGeometry = (() => {
     for (const edge of drawing.edges) {
       for (const [x, y] of edge.points) include(x, y, 3);
       for (const [x, y] of edge.arrows.flat()) include(x, y, 1);
-      if (edge.text) includeText(textBox(labelText(edge), ...edge.label, 12, undefined, true), 3);
+      const label = edgeLabel(edge);
+      if (label) {
+        const { x, y, width, height } = label.backing;
+        include(x, y);
+        include(x + width, y + height);
+      }
     }
     if (!Number.isFinite(box.left)) return { x: -100, y: -75, width: 200, height: 150 };
     return { x: box.left - padding, y: box.top - padding,
@@ -451,38 +457,43 @@ const BoardGeometry = (() => {
     return ' ' + name + '="' + value.slice(0, short ? 4 : 7) + '" ' + name + '-opacity="' + alpha + '"';
   }
 
-  function labelText(edge) {
-    return edge.text.replace(/[\n\r\t ]+/g, ' ').trim();
-  }
-
   function textLength(text, size, style) {
     const width = measure(text, size, style);
     return width > 0 ? ' textLength="' + width + '" lengthAdjust="spacingAndGlyphs"' : '';
   }
 
-  function figureLabel(edge, colors, background) {
-    const text = labelText(edge);
-    if (!text) return '';
+  function edgeLabel(edge) {
+    const text = edge.text?.replace(/[\n\r\t ]+/g, ' ').trim();
+    if (!text) return null;
     const [x, y] = edge.label;
-    const { left, right, top, bottom } = textBox(text, x, y, 12, undefined, true);
-    const plate = !background ? '' : '<rect x="' + (left - 3) + '" y="' + (top - 1)
-      + '" width="' + (right - left + 6) + '" height="' + (bottom - top + 2) + '" rx="2" fill="' + background + '"/>';
-    return plate + '<text x="' + x + '" y="' + y + '" text-anchor="middle" font-size="12" fill="'
-      + colors.ink + '"' + textLength(text, 12) + '>' + encode(text) + '</text>';
+    const { left, right, top, bottom } = textBox(text, x, y, labelSize, undefined, true);
+    return { text, x, y, backing: { x: left - 3, y: top - 2, width: right - left + 6, height: bottom - top + 4 } };
   }
 
-  function edgeMarkup(edge, colors, interactive, selected, figure) {
+  function wireMarkup(edge, colors, interactive, selected, portable) {
     // Paths and coordinates originate in geometry, never user markup.
     const color = selected ? colors.blue : safeColor(edge.style.color, colors.wire);
     const hit = interactive ? '<path class="edge-target" data-edge="' + encode(edge.id) + '" d="' + edge.path + '" fill="none" stroke="transparent" stroke-width="13"/>' : '';
-    const path = '<path d="' + edge.path + '" fill="none"' + paintAttribute('stroke', color, figure)
+    const path = '<path d="' + edge.path + '" fill="none"' + paintAttribute('stroke', color, portable)
       + ' stroke-width="' + (selected ? 2.5 : 1.5) + '"' + (edge.style.dashed ? ' stroke-dasharray="5 5"' : '') + '/>';
     const arrows = edge.arrows.filter(points => points.length).map(points =>
-      '<polygon points="' + points.map(p => p.join(',')).join(' ') + '"' + paintAttribute('fill', color, figure) + '/>').join('');
-    const label = !edge.text ? '' : figure ? figureLabel(edge, colors, figure.background) : '<text x="' + edge.label[0] + '" y="' + edge.label[1]
-      + '" text-anchor="middle" font-size="12" fill="' + colors.ink + '" stroke="' + colors.paper
-      + '" stroke-width="5" paint-order="stroke" stroke-linejoin="round">' + encode(edge.text) + '</text>';
-    return path + arrows + label + hit;
+      '<polygon points="' + points.map(p => p.join(',')).join(' ') + '"' + paintAttribute('fill', color, portable) + '/>').join('');
+    return path + arrows + hit;
+  }
+
+  function edgesMarkup(edges, colors, { interactive = false, selectedId, portable = false } = {}) {
+    let wires = '';
+    let labels = '';
+    for (const edge of edges) {
+      wires += wireMarkup(edge, colors, interactive, edge.id === selectedId, portable);
+      const label = edgeLabel(edge);
+      if (!label) continue;
+      // Labels cover crossing wires on the canvas and in figures with a transparent background.
+      labels += rectMarkup(label.backing) + ' rx="2" fill="' + colors.paper + '"/>'
+        + '<text x="' + label.x + '" y="' + label.y + '" text-anchor="middle" font-size="' + labelSize + '" fill="'
+        + colors.ink + '"' + (portable ? textLength(label.text, labelSize) : '') + '>' + encode(label.text) + '</text>';
+    }
+    return wires + labels;
   }
 
   function strokeMarkup(object, colors, portable = false) {
@@ -553,7 +564,7 @@ const BoardGeometry = (() => {
         + (figure ? textLength(line, object.size, object.style) : '') + '>' + encode(line) + '</text>').join('');
       return group + shape + words + '</g>';
     });
-    const bridges = drawing.edges.map(edge => edgeMarkup(edge, colors, false, false, figure)).join('');
+    const bridges = edgesMarkup(drawing.edges, colors, { portable: Boolean(figure) });
     let content = frames + bridges + objects.join('');
     if (figure?.clip) {
       const clip = '<defs><clipPath id="frame-clip">' + rectMarkup(figure.clip) + '/></clipPath></defs>';
@@ -567,5 +578,5 @@ const BoardGeometry = (() => {
       + background + content + '</svg>';
   }
 
-  return { measure, box, textStyle, portPoint, scene, bounds, palette, edgeMarkup, strokeMarkup, shapeMarkup, svg };
+  return { measure, box, textStyle, portPoint, scene, bounds, palette, edgesMarkup, strokeMarkup, shapeMarkup, svg };
 })();

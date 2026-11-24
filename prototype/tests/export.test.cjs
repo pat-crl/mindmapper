@@ -78,6 +78,27 @@ test('a selection shares the canvas routes, includes selected groups, and can ex
   assert.match(api.svg(figure), /Take 1 →/);
 });
 
+test('connector labels retain paper backings above every wire on transparent and dark figures', () => {
+  const board = Board.starterBoard('signal');
+  for (const [background, paper, ink] of [['transparent', '#ffffff', '#242426'], ['board', '#1e1e1e', '#e8e8ed']]) {
+    const figure = api.plan(board, { background, padding: 0 });
+    const svg = api.svg(figure);
+    const label = svg.match(/<rect x="([\d.-]+)" y="([\d.-]+)" width="([\d.]+)" height="([\d.]+)" rx="2" fill="(#[\da-f]+)"\/><text [^<>]+>Input<\/text>/);
+    assert.ok(label);
+    assert.equal(label[5], paper);
+    assert.ok(label[0].includes('fill="' + ink + '"'));
+    for (const edge of figure.drawing.edges) {
+      const wire = svg.indexOf('<path d="' + edge.path + '"');
+      assert.ok(wire >= 0 && wire < label.index);
+    }
+    const [x, y, width, height] = label.slice(1, 5).map(Number);
+    const edge = figure.drawing.edges.find(candidate => candidate.text === 'Input');
+    assert.ok(x < edge.label[0] && edge.label[0] < x + width);
+    assert.ok(y < edge.label[1] && edge.label[1] < y + height);
+    if (background === 'transparent') assert.doesNotMatch(svg, /<rect x="0" y="0"/);
+  }
+});
+
 test('a named frame has a fixed spatial crop, with the border and intersecting ink inside a separate margin', () => {
   const board = sampleBoard();
   assert.equal(api.listFrames(board)[0].id, 'frame');

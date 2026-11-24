@@ -2,11 +2,15 @@ import AppKit
 
 @main
 @MainActor
-final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private static let appName = "Mind Mapper Prototype"
+final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
+    private static let appName = "Mind Mapper"
+    private static let workspaceDirectoryName = "Mind Mapper Prototype"
     private var window: NSWindow?
     private var editor: WebEditor?
     private var terminationPending = false
+    private var editorReady = false
+    private var pendingFiles: [URL] = []
+    private var openingFiles = false
 
     static func main() {
         let app = NSApplication.shared
@@ -28,7 +32,8 @@ final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelega
         window.title = Self.appName
         window.minSize = NSSize(width: 560, height: 430)
         window.delegate = self
-        window.center()
+        if !window.setFrameUsingName("Mind Mapper Workspace") { window.center() }
+        window.setFrameAutosaveName("Mind Mapper Workspace")
         self.window = window
         do {
             let override = ProcessInfo.processInfo.environment["MINDMAPPER_PROTOTYPE_DATA_DIR"]
@@ -41,7 +46,7 @@ final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelega
             } else {
                 let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                           appropriateFor: nil, create: true)
-                directory = support.appendingPathComponent(Self.appName, isDirectory: true)
+                directory = support.appendingPathComponent(Self.workspaceDirectoryName, isDirectory: true)
             }
             guard let root = Bundle.main.resourceURL?.appendingPathComponent("Web", isDirectory: true) else {
                 throw StoreError.message("The bundled editor could not be found.")
@@ -50,6 +55,12 @@ final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelega
             self.editor = editor
             window.contentView = editor.webView
             editor.didFail = { [weak self] message in self?.showError(message) }
+            editor.didLoadPage = { [weak self] in
+                self?.editorReady = true
+                self?.openPendingFiles()
+            }
+            editor.didFinishImport = { [weak self] in self?.openPendingFiles() }
+            editor.didImportFile = { NSDocumentController.shared.noteNewRecentDocumentURL($0) }
             editor.load()
         } catch {
             showError(error.localizedDescription)
@@ -63,6 +74,34 @@ final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelega
         return true
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        pendingFiles.append(contentsOf: urls.filter(\.isFileURL))
+        window?.makeKeyAndOrderFront(nil)
+        openPendingFiles()
+    }
+
+    func windowDidEndSheet(_ notification: Notification) {
+        openPendingFiles()
+    }
+
+    private func openPendingFiles() {
+        guard editorReady, !openingFiles, !pendingFiles.isEmpty, let editor,
+              !editor.isImportingFile, window?.attachedSheet == nil else { return }
+        openingFiles = true
+        Task { @MainActor [self] in
+            defer { openingFiles = false }
+            while !pendingFiles.isEmpty && window?.attachedSheet == nil {
+                let url = pendingFiles.removeFirst()
+                do {
+                    _ = try await editor.importFile(at: url)
+                } catch {
+                    showError(url.lastPathComponent + "\n" + error.localizedDescription)
+                    break
+                }
+            }
+        }
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         // Route the red close button through the same save check as Command-Q.
         NSApp.terminate(self)
@@ -71,7 +110,7 @@ final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelega
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let editor, editor.hasLoadedLibrary else { return .terminateNow }
-        guard window?.attachedSheet == nil else { return .terminateCancel }
+        guard window?.attachedSheet == nil, !editor.isImportingFile else { return .terminateCancel }
         guard !terminationPending else { return .terminateLater }
         terminationPending = true
         Task { @MainActor [weak self] in
@@ -124,6 +163,37 @@ final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelega
         }
     }
 
+    @objc private func openRecent(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        application(NSApp, open: [url])
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let controller = NSDocumentController.shared
+        let urls = controller.recentDocumentURLs
+        if urls.isEmpty {
+            let empty = NSMenuItem(title: "No Recent Files", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+            return
+        }
+        let names = Dictionary(grouping: urls, by: \.lastPathComponent)
+        for url in urls {
+            let name = url.lastPathComponent
+            let location = url.deletingLastPathComponent().lastPathComponent
+            let title = (names[name]?.count ?? 0) > 1 ? "\(name) (\(location))" : name
+            let item = NSMenuItem(title: title, action: #selector(openRecent(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = url
+            item.toolTip = url.path
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let clear = menu.addItem(withTitle: "Clear Menu", action: #selector(NSDocumentController.clearRecentDocuments(_:)), keyEquivalent: "")
+        clear.target = controller
+    }
+
     private func command(_ title: String, action: String, key: String = "", modifiers: NSEvent.ModifierFlags = [.command]) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: #selector(editorCommand(_:)), keyEquivalent: key)
         item.representedObject = action
@@ -152,6 +222,11 @@ final class MindMapperPrototype: NSObject, NSApplicationDelegate, NSWindowDelega
         let file = menu("File")
         file.addItem(command("New Board", action: "new", key: "n"))
         file.addItem(command("Open Map or Library…", action: "open", key: "o"))
+        let recent = NSMenu(title: "Open Recent")
+        recent.delegate = self
+        let recentItem = NSMenuItem(title: recent.title, action: nil, keyEquivalent: "")
+        recentItem.submenu = recent
+        file.addItem(recentItem)
         file.addItem(command("Save Workspace", action: "save", key: "s"))
         file.addItem(.separator())
         file.addItem(command("Export Figure…", action: "exportFigure", key: "e", modifiers: [.command, .shift]))

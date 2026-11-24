@@ -6,14 +6,19 @@ struct StoreChecks {
         guard condition else { throw StoreError.message(description) }
     }
 
-    private static func expectFailure(_ description: String, _ operation: () throws -> Void) throws {
-        do { try operation() } catch { return }
+    private static func expectFailure(_ description: String, containing message: String? = nil, _ operation: () throws -> Void) throws {
+        do { try operation() } catch {
+            if let message { try check(error.localizedDescription.contains(message), description) }
+            return
+        }
         throw StoreError.message(description)
     }
 
     static func main() throws {
-        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("mindmapper-mac-store-" + UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        let files = FileManager.default
+        let sandbox = files.temporaryDirectory.appendingPathComponent("mindmapper-mac-store-" + UUID().uuidString)
+        defer { try? files.removeItem(at: sandbox) }
+        let temporary = sandbox.appendingPathComponent("Workspace")
 
         let first = #"{"format":"mindmapper.workspace","version":1,"activeBoardId":"a","boards":[{"id":"a","title":"First"}]}"#
         let second = #"{"format":"mindmapper.workspace","version":1,"activeBoardId":"a","boards":[{"id":"a","title":"Second"}]}"#
@@ -44,17 +49,59 @@ struct StoreChecks {
         try check(store.load() == second, "Invalid saves must leave the active revision intact.")
         try check(DocumentStore.readText(at: store.backupURL) == first, "Invalid saves must leave recovery intact.")
 
-        try FileManager.default.removeItem(at: store.libraryURL)
-        try expectFailure("External deletion should not be overwritten.") { try store.save(second) }
-        try check(!FileManager.default.fileExists(atPath: store.libraryURL.path), "The stale save recreated a removed workspace.")
-        try check(store.load() == nil, "An explicit load should accept the empty state.")
-        try store.save(first)
+        let third = second.replacingOccurrences(of: "Second", with: "Third")
+        var diskFull = true
+        var failedStaging: URL?
+        let limited = DocumentStore(directory: temporary) { bytes, target in
+            if diskFull {
+                failedStaging = target.deletingLastPathComponent()
+                try bytes.prefix(8).write(to: target)
+                throw CocoaError(.fileWriteOutOfSpace)
+            }
+            try bytes.write(to: target, options: .atomic)
+        }
+        try check(limited.load() == second, "The disk-full store should start from the current revision.")
+        do {
+            try limited.save(third)
+            throw StoreError.message("An out-of-space save must report failure.")
+        } catch let error as CocoaError where error.code == .fileWriteOutOfSpace {}
+        try check(DocumentStore.readText(at: store.libraryURL) == second, "A partial staged write changed the workspace.")
+        try check(DocumentStore.readText(at: store.backupURL) == first, "A partial staged write changed the recovery copy.")
+        try check(failedStaging.map { !files.fileExists(atPath: $0.path) } == true, "A failed write left its staging files on disk.")
+        diskFull = false
+        try limited.save(third)
+        try check(limited.load() == third, "Retry after clearing space did not write the pending revision.")
+        try check(DocumentStore.readText(at: store.backupURL) == second, "A successful retry did not retain the prior revision.")
+
+        let movedDirectory = sandbox.appendingPathComponent("Moved workspace")
+        try files.moveItem(at: temporary, to: movedDirectory)
+        try expectFailure("A moved workspace folder should reject saves.", containing: "folder is missing") { try limited.save(first) }
+        try check(!files.fileExists(atPath: temporary.path), "Saving recreated a moved workspace folder.")
+        try files.moveItem(at: movedDirectory, to: temporary)
+
+        let movedLibrary = sandbox.appendingPathComponent("Moved Library.json")
+        try files.moveItem(at: store.libraryURL, to: movedLibrary)
+        try expectFailure("A moved workspace should not be overwritten.") { try limited.save(third) }
+        try check(!files.fileExists(atPath: store.libraryURL.path), "The stale save recreated a missing workspace.")
+        try expectFailure("A missing workspace with a recovery copy must offer recovery, not start blank.", containing: "Library.previous.json") {
+            _ = try store.load()
+        }
+        try files.copyItem(at: store.backupURL, to: store.libraryURL)
+        try check(store.load() == second, "Restoring a copy of the previous revision did not reopen it.")
+        try check(DocumentStore.readText(at: movedLibrary) == third, "Recovery replaced the moved workspace.")
+        try check(DocumentStore.readText(at: store.backupURL) == second, "Recovery rewrote its source.")
+
+        let futureBytes = Data(unknownVersion.utf8)
+        try futureBytes.write(to: store.libraryURL)
+        try expectFailure("A future workspace version should ask for newer Mind Mapper.", containing: "newer version") { _ = try store.load() }
+        try expectFailure("A future workspace should be left intact.") { try store.save(first) }
+        try check(Data(contentsOf: store.libraryURL) == futureBytes, "The future workspace was replaced.")
 
         let corrupt = Data([0xff, 0xfe])
         try corrupt.write(to: store.libraryURL)
         try expectFailure("An unreadable save should fail to load.") { _ = try store.load() }
         try expectFailure("An unreadable save should not be overwritten.") { try store.save(first) }
         try check(Data(contentsOf: store.libraryURL) == corrupt, "The original unreadable data must be retained.")
-        print("Mac store checks passed: reopen, prior revision, stale writes, no-op saves, schema, byte limit, external deletion, corrupt data.")
+        print("Mac store checks passed: reopen, stale writer, no-op, byte limit, partial disk-full write and retry, moved workspace, recovery restore, corrupt and future workspace.")
     }
 }

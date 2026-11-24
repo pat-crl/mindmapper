@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'none'; object-src 'none'; base-uri 'none'">
-  <title>Mind Mapper Prototype</title>
+  <title>Mind Mapper</title>
   <link rel="stylesheet" href="workspace.css">
   <script defer src="../src/model.js"></script>
   <script defer src="board.js"></script>
@@ -196,8 +196,11 @@
         </fieldset>
       </div>
       <p id="export-size" aria-live="polite"></p>
-      <p id="export-status" role="status" hidden></p>
       <footer>
+        <div class="export-feedback">
+          <p id="export-status" role="status"></p>
+          <button type="button" id="export-reveal" hidden>Show in Finder</button>
+        </div>
         <button type="button" id="export-close">Close</button>
         <button type="button" id="export-share" hidden>Share…</button>
         <button type="submit" id="export-save" class="accent">Save…</button>

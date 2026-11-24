@@ -1,10 +1,12 @@
-# Mind Mapper Mac prototype
+# Mind Mapper for Mac
 
 ## Run it on Mac
 
-Run `prototype/mac/build.sh` from the project. Double-click the resulting `builds/mindmapper-prototype/Mind Mapper Prototype.app`. The build targets macOS 14.5 or later and is ad-hoc signed for local development.
+Open the Mind Mapper disk image and drag **Mind Mapper** to Applications. The first release targets macOS 14.5 or later. For a local development build, run `prototype/mac/build.sh` and open `builds/mindmapper/Mind Mapper.app`.
 
-The prototype opens on a blank board. **Start from template** adds a mind map, flowchart or signal flow. **Example board** combines a signal chain, a mind map, a note and a stroke. The 0.1.3 build reopens workspaces created by the previous prototypes.
+Mind Mapper 0.2.0 reopens workspaces created by the Mac prototypes and works offline. **Start from template** adds a mind map, flowchart or signal flow. **Example board** combines a signal chain, a mind map, a note and a stroke.
+
+Double-click a `.mindmap` in Finder, or use **File → Open Map or Library…** (⌘O). Opening a file adds its boards to the library. **File → Open Recent** lists successfully opened files. Use ⌘N to start a board, ⌘F to find an idea, ⌘S to save now and ⇧⌘E to export a figure.
 
 ## Everyday canvas
 
@@ -28,13 +30,19 @@ The prototype opens on a blank board. **Start from template** adds a mind map, f
 
 Choose **Export → Figure…** to preview the whole board, the selection or a named frame. Frame export crops to the frame on the canvas. Set padding and background, and turn on **Include folded branches** when the figure should show a whole tree. The preview uses the same geometry as the saved file, including text wrapping, ink and connections.
 
-- **SVG** keeps shapes and connections scalable and labels as live text. It uses local font fallbacks; the document app determines which fonts and glyphs it can display.
+- **SVG** keeps shapes and connections scalable and labels as live text. The document app determines which local fonts and glyphs it can display.
 - **PDF** fits the figure to one vector page at its content size. It's available in the Mac app.
 - **PNG** supports a transparent background. **JPEG** uses white when Transparent is selected. Choose a scale and review the resulting pixel dimensions before saving.
 
-Use **Save…** to name a file and **Share…** to open the Mac share picker. The local browser editor downloads SVG, PNG, JPEG and editable files.
+Use **Save…** to choose a file and folder. The export window confirms the saved location and offers **Show in Finder**. **Share…** opens the Mac share picker. The local browser editor downloads SVG, PNG, JPEG and editable files.
 
-The app uses its own `~/Library/Application Support/Mind Mapper Prototype` folder. The previous workspace sits beside the current one. For an isolated run, set `MINDMAPPER_PROTOTYPE_DATA_DIR` to a scratch directory before launching the executable. The same editor can be opened from `prototype/index.html` in a local browser, where it uses a separate prototype storage key.
+## Backup and recovery
+
+Choose **Export → Editable library** for a backup you can open in Mind Mapper. Keep a dated copy outside the app’s data folder. To restore into the current library, open the backup as an import. Mind Mapper adds copies if the same board IDs are already present.
+
+The Mac app keeps `Library.json` and its previous saved revision, `Library.previous.json`, in `~/Library/Application Support/Mind Mapper Prototype`. If a library is missing or cannot open, quit the app and copy both available files somewhere safe before restoring. To inspect the previous revision separately, copy `Library.previous.json` as `Library.json` into a scratch folder and launch the executable with `MINDMAPPER_PROTOTYPE_DATA_DIR` set to that folder. After confirming the recovery, export an editable copy for safekeeping.
+
+The editor can also open from `prototype/index.html` in a browser with separate local storage.
 
 ## Architecture
 

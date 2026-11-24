@@ -352,7 +352,7 @@
     const colors = geometry.palette();
     const drawing = currentScene;
     let markup = drawing.objects.filter(object => object.type === 'group').map(object => geometry.shapeMarkup(object, colors)).join('');
-    markup += drawing.edges.map(edge => geometry.edgeMarkup(edge, colors, true, edge.id === state.edge)).join('');
+    markup += geometry.edgesMarkup(drawing.edges, colors, { interactive: true, selectedId: state.edge });
     diagram.innerHTML = markup;
     const preview = $('#stroke-preview');
     const gesture = state.gesture;
@@ -454,7 +454,9 @@
     });
     nav.replaceChildren(...entries);
     if (focus) entries.find(button => button.dataset.board === focus)?.focus();
-    if (document.activeElement !== $('#board-title')) $('#board-title').value = active.title;
+    const title = $('#board-title');
+    if (title.dataset.board !== active.id || document.activeElement !== title) title.value = active.title;
+    title.dataset.board = active.id;
     $('button[data-command="undo"]').disabled = state.prior.length === 0;
     $('button[data-command="redo"]').disabled = state.next.length === 0;
     $('button[data-command="previousBoard"]').disabled = !state.previousBoard || !state.workspace.boards.some(item => item.id === state.previousBoard);
@@ -992,7 +994,6 @@
   const fileName = () => exportDialog.fileName(board().title);
 
   async function loadImport() {
-    if (bridge) return send('import');
     const input = $('#import-file');
     input.value = '';
     return new Promise(resolve => {
@@ -1002,9 +1003,14 @@
   }
 
   async function addImport() {
+    if (bridge) return send('import');
     if (filePicker) return false;
     const text = await loadImport();
-    if (text == null) return false;
+    return text == null ? false : importText(text);
+  }
+
+  async function importText(text) {
+    if (!state.workspace || !finishTitle() || !finishEdit()) return false;
     if (new TextEncoder().encode(text).length > model.MAX_BYTES) throw new Error('The import exceeds the workspace size limit.');
     const imported = model.importDocument(JSON.parse(text), geometry.measure);
     if (!change((active, workspace) => model.addImportedBoards(workspace, imported.boards), () => choose())) return false;
@@ -1012,8 +1018,17 @@
     return flush();
   }
 
+  function finishTitle() {
+    const field = $('#board-title');
+    if (!state.workspace || field.dataset.board !== board().id) return true;
+    const title = field.value.trim() || 'Untitled board';
+    if (title !== board().title && !change(active => { active.title = title; })) return false;
+    if (field.value !== title) field.value = title;
+    return true;
+  }
+
   function switchBoard(id) {
-    if (!finishEdit() || board().id === id || !state.workspace.boards.some(item => item.id === id)) return;
+    if (!finishTitle() || !finishEdit() || board().id === id || !state.workspace.boards.some(item => item.id === id)) return;
     state.previousBoard = board().id;
     state.workspace = { ...state.workspace, activeBoardId: id };
     choose();
@@ -1131,7 +1146,7 @@
 
   async function perform(name) {
     if (!state.workspace || !commands[name]) return false;
-    if (!finishEdit()) return false;
+    if (!finishTitle() || !finishEdit()) return false;
     try {
       const result = await commands[name]();
       return result !== false;
@@ -1484,7 +1499,11 @@
   });
   document.addEventListener('keyup', event => { if (event.code === 'Space') state.space = false; });
   window.addEventListener('blur', () => { state.space = false; finishGesture(false); });
-  window.addEventListener('pagehide', () => { if (state.workspace) void flush(); });
+  function saveBeforeHiding() {
+    if (state.workspace && finishTitle() && finishEdit(false, false)) void flush();
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveBeforeHiding(); });
+  window.addEventListener('pagehide', saveBeforeHiding);
   document.addEventListener('click', event => {
     const control = event.target.closest('button');
     if (!state.workspace || !control) return;
@@ -1575,9 +1594,7 @@
     change(active => { roots = workflows.pasteOutline(active, $('#outline-text').value, anchor, [x, y]); },
       () => choose(roots));
   });
-  $('#board-title').addEventListener('change', event => {
-    change(active => { active.title = event.target.value.trim() || 'Untitled board'; });
-  });
+  $('#board-title').addEventListener('change', finishTitle);
   $('#import-file').addEventListener('change', async event => {
     const resolve = filePicker;
     filePicker = null;
@@ -1610,5 +1627,5 @@
     }
   }
 
-  window.MindMapperPrototype = { perform, ready: initialize() };
+  window.MindMapperPrototype = { perform, importText, ready: initialize() };
 })();

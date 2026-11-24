@@ -136,7 +136,12 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
         try await check(editor.perform("exportFigure") as? Bool == true, "The Mac figure command did not open the preview.")
         for format in ["svg", "pdf", "png", "jpeg"] {
             let status = try await writeFigure(format, in: editor)
-            try check(status == "Figure saved.", "Saving a \(format) figure returned: \(status)")
+            let ext = format == "jpeg" ? "jpg" : format
+            try check(status == "Saved to \(temporary.lastPathComponent) · Figure.\(ext)",
+                      "Saving a \(format) figure returned: \(status)")
+            let canReveal = try await editor.webView.callAsyncJavaScript(
+                "return !document.querySelector('#export-reveal').hidden;", contentWorld: .page)
+            try check(canReveal as? Bool == true, "A saved figure could not be located from the preview.")
         }
         func output(_ ext: String) -> URL { temporary.appendingPathComponent("Figure." + ext) }
         let svg = try XMLDocument(contentsOf: output("svg"), options: [.nodeLoadExternalEntitiesNever])
@@ -171,7 +176,7 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
         try await check(writeFigure("svg", in: editor) == "Save cancelled.", "The preview did not report cancellation.")
         failDestination = true
         let failed = try await writeFigure("png", in: editor)
-        try check(failed != "Figure saved." && failed != "Save cancelled."
+        try check(!failed.hasPrefix("Saved to ") && failed != "Save cancelled."
                   && !FileManager.default.fileExists(atPath: temporary.appendingPathComponent("Missing folder").path),
                   "A failed native write claimed success or left an incomplete destination.")
         try check(Data(contentsOf: output("svg")) == priorSVG, "Cancelled save changed the prior SVG.")
@@ -205,6 +210,87 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
         ) as? [String]
         try check(errors?.first?.contains("14,400") == true && errors?.last?.contains("does not match") == true,
                   "An oversized PDF or invalid blob reached the save panel.")
+    }
+
+    private func verifyQueuedSaves(_ editor: WebEditor, store: DocumentStore) async throws {
+        let result = try await editor.webView.callAsyncJavaScript(
+            """
+            const editor = window.MindMapperPrototype;
+            const bridge = window.webkit.messageHandlers.mindmapper;
+            const original = bridge.postMessage;
+            const title = document.querySelector('#board-title');
+            const savedTitles = [];
+            let nativeSaved, resume;
+            const firstNativeSave = new Promise(resolve => { nativeSaved = resolve; });
+            const firstAcknowledgement = new Promise(resolve => { resume = resolve; });
+            bridge.postMessage = async function (message) {
+                if (message.action !== 'save') return original.call(bridge, message);
+                const workspace = JSON.parse(message.text);
+                savedTitles.push(workspace.boards.find(board => board.id === workspace.activeBoardId).title);
+                const first = savedTitles.length === 1;
+                const result = await original.call(bridge, message);
+                if (first) {
+                    nativeSaved(true);
+                    await firstAcknowledgement;
+                }
+                return result;
+            };
+            try {
+                title.focus();
+                title.value = 'First uncommitted title';
+                const first = editor.perform('save');
+                const started = await Promise.race([firstNativeSave, new Promise(resolve => setTimeout(() => resolve(false), 2000))]);
+                if (!started) throw new Error('The first save had no native acknowledgement to delay.');
+                title.value = 'Title edited during save';
+                let settled = false;
+                const second = editor.perform('save').then(ok => { settled = true; return ok; });
+                await new Promise(resolve => setTimeout(resolve, 30));
+                const waiting = !settled && savedTitles.length === 1;
+                resume();
+                return { waiting, saved: await Promise.all([first, second]), savedTitles };
+            } finally {
+                resume();
+                bridge.postMessage = original;
+            }
+            """,
+            contentWorld: .page
+        ) as? [String: Any]
+        try check(result?["waiting"] as? Bool == true && result?["saved"] as? [Bool] == [true, true],
+                  "A quit-style save did not wait on the pending native acknowledgement.")
+        try check(result?["savedTitles"] as? [String] == ["First uncommitted title", "Title edited during save"],
+                  "The save queue did not commit focused title edits in sequence.")
+        let afterQueue = try json(at: store.libraryURL)
+        let activeID = afterQueue["activeBoardId"] as? String
+        try check(boards(at: store.libraryURL).first { $0["id"] as? String == activeID }?["title"] as? String == "Title edited during save",
+                  "The latest draft was not present in the acknowledged on-disk workspace.")
+    }
+
+    private func verifyBackgroundSave(_ editor: WebEditor, store: DocumentStore) async throws {
+        let objectID = try await editor.webView.callAsyncJavaScript(
+            """
+            const object = document.querySelector('.object[data-type="shape"][data-locked="false"]');
+            if (!object) throw new Error('No unlocked shape is available to edit.');
+            object.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+            const text = document.querySelector('#object-editor');
+            if (text.hidden) throw new Error('The background-save test did not open the text editor.');
+            text.value = 'Draft saved when hidden';
+            text.dispatchEvent(new Event('input', { bubbles: true }));
+            Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+            try { document.dispatchEvent(new Event('visibilitychange')); }
+            finally { delete document.hidden; }
+            return object.dataset.object;
+            """,
+            contentWorld: .page
+        ) as? String
+        try check(objectID != nil, "The background-save test did not identify the edited object.")
+        for _ in 0..<50 {
+            let activeID = try json(at: store.libraryURL)["activeBoardId"] as? String
+            let active = try boards(at: store.libraryURL).first { $0["id"] as? String == activeID }
+            let objects = active?["objects"] as? [[String: Any]] ?? []
+            if objects.contains(where: { ($0["id"] as? String) == objectID && ($0["text"] as? String) == "Draft saved when hidden" }) { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw StoreError.message("Backgrounding did not commit and save the pending draft through the native bridge.")
     }
 
     private func runChecks() async throws {
@@ -340,6 +426,9 @@ final class WebBridgeChecks: NSObject, NSApplicationDelegate {
         guard let micY, let monitorY else { throw StoreError.message("The arranged flow lost an object.") }
         try check(micY < monitorY, "The native flow command did not arrange the selected chain top to bottom.")
 
-        print("Mac WKWebView checks passed: native load/save, legacy import, mixed edits, undo/redo, SVG/PDF/PNG/JPEG preview export, editable exports, cancelled/invalid/interrupted saves, scratch clipboard, fresh reopen, left child, and vertical flow.")
+        try await verifyQueuedSaves(reopened, store: store)
+        try await verifyBackgroundSave(reopened, store: store)
+
+        print("Mac WKWebView checks passed: native load/save, legacy import, mixed edits, undo/redo, SVG/PDF/PNG/JPEG preview export, editable exports, cancelled/invalid/interrupted saves, scratch clipboard, fresh reopen, left child, vertical flow, quit-style queued acknowledgement and background draft save.")
     }
 }

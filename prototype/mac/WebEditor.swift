@@ -24,8 +24,13 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
     private let pasteboard: NSPasteboard
     private var pickerOpen = false
     private var shares: [UUID: FigureShare] = [:]
+    private var lastExport: (id: String, url: URL)?
     private(set) var hasLoadedLibrary = false
+    private(set) var isImportingFile = false
     var didFail: ((String) -> Void)?
+    var didLoadPage: (() -> Void)?
+    var didImportFile: ((URL) -> Void)?
+    var didFinishImport: (() -> Void)?
 
     init(resourceRoot: URL, store: DocumentStore, ephemeral: Bool = false,
          pasteboard: NSPasteboard = .general,
@@ -93,6 +98,10 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
         didFail?(error.localizedDescription)
     }
 
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        didLoadPage?()
+    }
+
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         didFail?(error.localizedDescription)
     }
@@ -128,6 +137,13 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
                 try openFile(replyHandler)
             case "export":
                 try outputFile(body, share: false, replyHandler)
+            case "revealExport":
+                guard let lastExport, body["id"] as? String == lastExport.id,
+                      FileManager.default.fileExists(atPath: lastExport.url.path) else {
+                    throw StoreError.message("This export is no longer at its saved location.")
+                }
+                NSWorkspace.shared.activateFileViewerSelecting([lastExport.url])
+                replyHandler(true, nil)
             case "share":
                 try outputFile(body, share: true, replyHandler)
             case "readClipboard":
@@ -218,6 +234,7 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
     }
 
     private func openFile(_ reply: @escaping Reply) throws {
+        guard !isImportingFile else { throw StoreError.message("A file is already being imported.") }
         let window = try windowForPicker()
         let panel = NSOpenPanel()
         panel.title = "Open a Mind Mapper File"
@@ -226,17 +243,52 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         pickerOpen = true
+        isImportingFile = true
         chooseFile(panel, window) { [self] url in
             pickerOpen = false
             guard let url else {
-                reply(NSNull(), nil)
+                finishImport()
+                reply(false, nil)
                 return
             }
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            do { reply(try DocumentStore.readText(at: url), nil) }
-            catch { reply(nil, error.localizedDescription) }
+            Task { @MainActor [self] in
+                do { reply(try await self.importSelectedFile(at: url), nil) }
+                catch { reply(nil, error.localizedDescription) }
+            }
         }
+    }
+
+    func importFile(at url: URL) async throws -> Bool {
+        guard !isImportingFile else { throw StoreError.message("A file is already being imported.") }
+        isImportingFile = true
+        return try await importSelectedFile(at: url)
+    }
+
+    private func finishImport() {
+        isImportingFile = false
+        didFinishImport?()
+    }
+
+    private func importSelectedFile(at url: URL) async throws -> Bool {
+        let access = url.startAccessingSecurityScopedResource()
+        defer {
+            if access { url.stopAccessingSecurityScopedResource() }
+            finishImport()
+        }
+        let text = try DocumentStore.readText(at: url)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const editor = window.MindMapperPrototype;
+            if (!(await editor?.ready)) return { error: 'Open a workspace before importing a file.' };
+            try { return { imported: await editor.importText(text) }; }
+            catch (error) { return { error: error.message || String(error) }; }
+            """,
+            arguments: ["text": text], in: nil, contentWorld: .page
+        ) as? [String: Any]
+        if let error = result?["error"] as? String { throw StoreError.message(error) }
+        let imported = result?["imported"] as? Bool == true
+        if imported { didImportFile?(url) }
+        return imported
     }
 
     private func outputFile(_ body: [String: Any], share: Bool, _ reply: @escaping Reply) throws {
@@ -322,6 +374,7 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
         let panel = NSSavePanel()
         panel.title = "Export from Mind Mapper"
         panel.nameFieldStringValue = name
+        panel.directoryURL = lastExport?.url.deletingLastPathComponent()
         panel.allowedContentTypes = [type]
         panel.canCreateDirectories = true
         chooseFile(panel, window) { [self] url in
@@ -340,7 +393,9 @@ final class WebEditor: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWit
                     throw StoreError.message("The filename extension must match the chosen export format.")
                 }
                 try bytes.write(to: url, options: .atomic)
-                reply(true, nil)
+                let id = UUID().uuidString
+                lastExport = (id, url)
+                reply(["id": id, "name": url.lastPathComponent, "folder": url.deletingLastPathComponent().lastPathComponent], nil)
             } catch {
                 reply(nil, error.localizedDescription)
             }

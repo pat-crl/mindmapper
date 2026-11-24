@@ -5,7 +5,7 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>Mind Mapper Prototype</string>
+  <string>Mind Mapper</string>
   <key>CFBundleExecutable</key>
   <string>MindMapperPrototype</string>
   <key>CFBundleIconFile</key>
@@ -13,13 +13,28 @@
   <key>CFBundleIdentifier</key>
   <string>au.pcarroll.mindmapper.prototype</string>
   <key>CFBundleName</key>
-  <string>Mind Mapper Prototype</string>
+  <string>Mind Mapper</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.3</string>
+  <string>0.2.0</string>
   <key>CFBundleVersion</key>
-  <string>4</string>
+  <string>5</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Mind Mapper Board</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>au.pcarroll.mindmapper.prototype.board</string>
+      </array>
+    </dict>
+  </array>
   <key>LSMinimumSystemVersion</key>
   <string>14.5</string>
   <key>NSHighResolutionCapable</key>
